@@ -152,12 +152,13 @@ export class MandelbrotGlRenderer {
     this.glCanvas = glCanvas;
   }
 
-  static tryCreate(): MandelbrotGlRenderer | null {
+  static create(): MandelbrotGlRenderer {
     const glCanvas = document.createElement("canvas");
     const gl =
-      glCanvas.getContext("webgl", { failIfMajorPerformanceCaveat: true }) ??
-      glCanvas.getContext("experimental-webgl");
-    if (!gl) return null;
+      glCanvas.getContext("webgl") ?? glCanvas.getContext("experimental-webgl");
+    if (!gl) {
+      throw new Error("WebGL is required but unavailable in this browser");
+    }
     return new MandelbrotGlRenderer(glCanvas);
   }
 
