@@ -1,10 +1,18 @@
 import {
   CANONICAL_BOUNDS,
-  lerpBounds,
+  boundsEqual,
   tileBounds,
   type Bounds,
 } from "./bounds";
-import { boundsToScreen, renderMandelbrot } from "./mandelbrot";
+import {
+  boundsToScreen,
+  clearZoomBackground,
+  drawFractal,
+  prepareZoomBackground,
+  renderFractal,
+  renderZoomFractal,
+  type FractalRender,
+} from "./mandelbrot";
 import type { PeerPresence } from "./presence";
 
 const GRID_SIZE = 8;
@@ -24,8 +32,12 @@ export class Viewport {
   private animStart = 0;
   private animFrom: Bounds = { ...CANONICAL_BOUNDS };
   private animTo: Bounds = { ...CANONICAL_BOUNDS };
+  private animRow = 0;
+  private animCol = 0;
   private peers: Map<string, PeerPresence> = new Map();
   private onBoundsChanged: ((bounds: Bounds) => void) | null = null;
+  private fractalCache: FractalRender | null = null;
+  private layoutCache: SquareLayout | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -56,41 +68,77 @@ export class Viewport {
     this.canvas.style.width = `${w}px`;
     this.canvas.style.height = `${h}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.layoutCache = null;
+    this.invalidateFractalCache();
     this.draw();
   }
 
   computeSquareLayout(): SquareLayout {
+    if (this.layoutCache) return this.layoutCache;
     const w = window.innerWidth;
     const h = window.innerHeight;
-    if (w < h) {
-      return { x: 0, y: (h - w) / 2, size: w };
-    }
-    return { x: (w - h) / 2, y: 0, size: h };
+    this.layoutCache =
+      w < h ? { x: 0, y: (h - w) / 2, size: w } : { x: (w - h) / 2, y: 0, size: h };
+    return this.layoutCache;
+  }
+
+  private tileRectForZoom(size: number, t: number): { x: number; y: number; w: number; h: number } {
+    const cell = size / GRID_SIZE;
+    const startX = this.animCol * cell;
+    const startY = this.animRow * cell;
+    const startCx = startX + cell / 2;
+    const startCy = startY + cell / 2;
+    const cx = startCx + (size / 2 - startCx) * t;
+    const cy = startCy + (size / 2 - startCy) * t;
+    const destW = cell + (size - cell) * t;
+    const destH = cell + (size - cell) * t;
+    return { x: cx - destW / 2, y: cy - destH / 2, w: destW, h: destH };
   }
 
   draw(): void {
+    const layout = this.computeSquareLayout();
     const w = window.innerWidth;
     const h = window.innerHeight;
+
     this.ctx.fillStyle = "#111";
     this.ctx.fillRect(0, 0, w, h);
-
-    const layout = this.computeSquareLayout();
-    const displayBounds = this.animating
-      ? lerpBounds(
-          this.animFrom,
-          this.animTo,
-          Math.min(1, (performance.now() - this.animStart) / ZOOM_DURATION_MS),
-        )
-      : this.bounds;
 
     this.ctx.save();
     this.ctx.translate(layout.x, layout.y);
 
-    renderMandelbrot(this.ctx, layout.size, layout.size, displayBounds);
-    this.drawPeerHighlights(layout, displayBounds);
-    this.drawGrid(layout);
+    if (this.animating) {
+      const t = Math.min(1, (performance.now() - this.animStart) / ZOOM_DURATION_MS);
+      const tile = this.tileRectForZoom(layout.size, t);
+      const frame = renderZoomFractal(layout.size, layout.size, this.animFrom, this.animTo, tile);
+      this.ctx.drawImage(frame, 0, 0, layout.size, layout.size);
+      this.drawGrid(layout);
+    } else {
+      this.ensureFractalCache(this.bounds, layout.size);
+      if (this.fractalCache) {
+        drawFractal(this.ctx, this.fractalCache, this.bounds, 0, 0, layout.size, layout.size);
+      }
+      this.drawPeerHighlights(layout, this.bounds);
+      this.drawGrid(layout);
+    }
 
     this.ctx.restore();
+  }
+
+  private ensureFractalCache(bounds: Bounds, size: number): void {
+    const cache = this.fractalCache;
+    if (
+      cache &&
+      cache.width === size &&
+      cache.height === size &&
+      boundsEqual(cache.bounds, bounds)
+    ) {
+      return;
+    }
+    this.fractalCache = renderFractal(size, size, bounds);
+  }
+
+  private invalidateFractalCache(): void {
+    this.fractalCache = null;
   }
 
   private drawGrid(layout: SquareLayout): void {
@@ -135,9 +183,13 @@ export class Viewport {
 
   selectTile(row: number, col: number): void {
     if (this.animating) return;
+    const layout = this.computeSquareLayout();
     const target = tileBounds(this.bounds, row, col, GRID_SIZE);
     this.animFrom = { ...this.bounds };
     this.animTo = target;
+    this.animRow = row;
+    this.animCol = col;
+    prepareZoomBackground(layout.size, layout.size, this.animFrom);
     this.animStart = performance.now();
     this.animating = true;
     this.animate();
@@ -152,6 +204,8 @@ export class Viewport {
     } else {
       this.bounds = { ...this.animTo };
       this.animating = false;
+      clearZoomBackground();
+      this.invalidateFractalCache();
       this.draw();
       this.onBoundsChanged?.(this.bounds);
     }
