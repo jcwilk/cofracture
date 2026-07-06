@@ -57,29 +57,6 @@ Unless the user explicitly asks otherwise: **commit and push on the current work
 
 Use **`.env`** for local secrets (API keys for optional tools). **`.env`** should remain gitignored in consuming projects.
 
-## Conversation sleuths
-
-**In development — reference repository only.** Conversation sleuths are evolving in this OSF reference bundle and **MUST NOT** be deployed to external consumer projects via install/sync. Default OSF target synchronization excludes the sleuths skill and companion tooling; use sleuths only in this reference repo until a future change explicitly promotes them for consumers.
-
-Human-defined **sleuth** lenses summarize local Cursor agent transcripts into progressive, machine-local artifacts. They complement OpenSpec living specs (conversation archaeology, not behavioral contracts).
-
-| Location | Role |
-|----------|------|
-| **`.sleuths/queries/<id>.yaml`** | Lens definition (what to extract) |
-| **`.sleuths/<id>/summary.md`** | Agent-readable summary (may be stale) |
-| **`.sleuths/<id>/checkpoint.yaml`** | Incremental processing cursor |
-
-| **`.sleuths/config.yaml`** | **Required** inference endpoint (`ollama.base_url`, `ollama.model`, optional `ollama.api`: `ollama` or `llama-cpp` / `openai-chat`) — human-created, gitignored |
-| **`.sleuths/secrets.env`** | Optional LangSmith tracing credentials — human-created, gitignored; see **`.cursor/skills/sleuths/secrets.example.env`** |
-
-- Before refresh, ensure **`.sleuths/config.yaml`** exists and points at your inference server (Ollama `/api/generate` or llama.cpp `/v1/chat/completions`). Sleuth **does not** start or install inference locally — it only calls the configured URL. Refresh runs **collect → finalize** at the batch level: per-segment relevance filter → batched summarize → intra-segment reduce via LangGraph, then a single cross-segment merge at batch end (see **`.cursor/skills/sleuths/SKILL.md`**). Use **`--session <transcript_id>`** (with **`--sleuth`**) to reprocess one agent session from line 1; use **`--dry-run`** on refresh to emit the summary to stdout without persisting checkpoint or summary artifacts.
-- **LangSmith tracing is opt-in.** When `.sleuths/secrets.env` supplies credentials, refresh exports one hierarchical root trace per operation with named child spans for pipeline phases and inference calls (including LLM prompts derived from transcripts) to LangSmith cloud. Default remains fully local.
-- Before guessing about prior decisions, bugs, or migrations discussed in past agent sessions, **read relevant `.sleuths/*/summary.md`** when they exist.
-- **Refresh is human-only in v1** — do not run sleuth refresh unless the human explicitly asks (skill **`/sleuths`**).
-- **`.sleuths/` is gitignored** and may contain secrets from transcripts — **never commit** it.
-
-One-time local install: **`scripts/build-local-tools.sh`**. Requires **Python 3.11+**. Skill: **`.cursor/skills/sleuths/SKILL.md`**.
-
 ## Reference
 
 - **`OPENSPEC_FLOW.md`** — narrative, vocabulary, **`OPENSPEC_FLOW_VERSION`** (bundle version for install/upgrade), and capability table.
