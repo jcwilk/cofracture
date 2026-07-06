@@ -1,0 +1,19 @@
+[package]
+name = "presence-shared"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+iroh = { workspace = true }
+iroh-tickets = { workspace = true }
+iroh-gossip = { workspace = true }
+n0-future = "0.3"
+postcard = "1.1.1"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", default-features = false, features = ["sync"] }
+tracing = "0.1"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["--enable-nontrapping-float-to-int", "--enable-bulk-memory"]

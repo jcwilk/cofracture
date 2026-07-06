@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["presence-shared", "presence-wasm"]
+
+[workspace.dependencies]
+iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
+iroh-tickets = "1.0.0"
+iroh-gossip = { version = "0.101", default-features = false, features = ["net"] }

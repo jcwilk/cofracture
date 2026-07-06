@@ -1,23 +1,45 @@
 # cofracture
 
-Project workspace with [OpenSpec Flow](https://github.com/Fission-AI/OpenSpec) (OSF) for Cursor: propose → apply → finish (archive + merge) or abort.
+Collaborative Mandelbrot explorer — explore the fractal on an 8×8 tile grid with peer presence overlays via [iroh-gossip](https://docs.iroh.computer/connecting/gossip).
 
-## OpenSpec Flow
+**Live site:** https://jcwilk.github.io/cofracture/
 
-This repo includes the OSF Cursor integration (**`OPENSPEC_FLOW_VERSION`** in **`OPENSPEC_FLOW.md`**). See **`OPENSPEC_FLOW.md`** and **`AGENTS.md`** for workflow and agent rules.
+## Local development
 
 ### Prerequisites
 
-- Node.js **20.19+** for `npx @fission-ai/openspec@latest`
-- Cursor with **Task** subagents enabled
+- Node.js 20.19+
+- Rust stable with `wasm32-unknown-unknown` target
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/)
+- `clang` (for building iroh's TLS dependencies for WASM)
 
-### Getting started
+### Setup
 
-1. Initialize OpenSpec in this project when ready:
+```bash
+rustup target add wasm32-unknown-unknown
+npm install
+npm run build:wasm    # or build:wasm:release for production
+npm run dev
+```
 
-   ```bash
-   npx @fission-ai/openspec@latest init
-   ```
+Open the dev server URL (typically http://localhost:5173/cofracture/).
 
-2. Use **`/osf-explore`** and **`/osf-propose`** to shape intent under **`openspec/changes/`**.
-3. Use **`/osf-apply-changes`** to implement approved work on a branch.
+### Production build
+
+```bash
+npm run build:wasm:release
+npm run build
+npm run preview
+```
+
+Preview serves at http://localhost:4173/cofracture/.
+
+## Usage
+
+- **Navigate:** tap or click a tile to zoom into that region (8×8 grid subdivides after each zoom).
+- **Collaborate:** use **Share session** to copy a URL with an iroh session ticket; open it in another browser to see peer tile highlights.
+- **Solo mode:** if gossip cannot connect, local exploration continues without peer overlays.
+
+## OpenSpec Flow
+
+This repo also ships [OpenSpec Flow](https://github.com/Fission-AI/OpenSpec) (OSF) for Cursor. See **`OPENSPEC_FLOW.md`** and **`AGENTS.md`**.
