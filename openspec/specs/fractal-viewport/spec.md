@@ -1,7 +1,7 @@
 # fractal-viewport Specification
 
 ## Purpose
-TBD - created by archiving change collaborative-mandelbrot-explorer. Update Purpose after archive.
+Interactive Mandelbrot exploration with letterboxed viewport, 8×8 tile grid, and expand-in-place tile zoom.
 ## Requirements
 ### Requirement: Mandelbrot set is rendered in the viewport
 The application SHALL render the Mandelbrot set for the complex-plane region currently in view.
@@ -32,22 +32,29 @@ The currently visible square region SHALL be divided into an 8×8 grid of 64 equ
 - **AND** each tile covers an equal portion of the complex-plane region in view
 
 ### Requirement: Tile selection zooms and recenters the view
-When a visitor selects a tile, the application SHALL animate the view so that the selected tile's region becomes the full visible square.
+
+When a visitor selects a tile, the application SHALL animate the view so that the selected tile's region becomes the full visible square. During the transition, the region outside the selected tile's growing area SHALL continue to show the pre-zoom view unchanged.
 
 #### Scenario: Tap selects and zooms a tile on mobile
+
 - **WHEN** a visitor taps a tile on a touch-capable device
-- **THEN** the view animates until the tapped tile's region fills the visible square
+- **THEN** the tapped tile's region grows until it fills the visible square
+- **AND** the surrounding area continues to display the view from before the tap until the transition completes
 
 #### Scenario: Click selects and zooms a tile on pointer devices
+
 - **WHEN** a visitor clicks a tile with a pointing device
-- **THEN** the view animates until the clicked tile's region fills the visible square
+- **THEN** the clicked tile's region grows until it fills the visible square
+- **AND** the surrounding area continues to display the view from before the click until the transition completes
 
 ### Requirement: Zoom transitions are quick and linear
-Tile-selection transitions SHALL use linear interpolation and complete quickly enough to feel snappy during repeated exploration.
+
+Tile-selection transitions SHALL use linear interpolation of the selected tile's on-screen region (position and size) and complete quickly enough to feel snappy during repeated exploration.
 
 #### Scenario: Animation completes without easing delay
+
 - **WHEN** a visitor selects a tile
-- **THEN** the transition from the previous view to the new view progresses at a constant rate
+- **THEN** the selected tile's screen region moves and scales at a constant rate from its grid cell to the full visible square
 - **AND** the transition completes in a short, fixed duration suitable for rapid successive selections
 
 ### Requirement: Each zoomed view is re-tiled into 8×8

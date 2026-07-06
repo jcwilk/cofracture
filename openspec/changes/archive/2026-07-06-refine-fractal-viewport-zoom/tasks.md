@@ -13,7 +13,7 @@
 ## 3. Acceptance
 
 - [x] 3.1 Run `npx @fission-ai/openspec@latest validate refine-fractal-viewport-zoom --type change`
-- [ ] 3.2 Run `npx @fission-ai/openspec@latest validate --specs` after archive
+- [x] 3.2 Run `npx @fission-ai/openspec@latest validate --specs` after archive
 
 ## Explicitly deferred
 
