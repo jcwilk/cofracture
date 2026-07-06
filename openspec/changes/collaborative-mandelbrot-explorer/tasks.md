@@ -16,17 +16,20 @@
 - [ ] 2.6 Re-tile into 8×8 after each transition completes
 - [ ] 2.7 Add local manual verification notes for mobile touch and desktop click paths
 
-## 3. Collaborative presence (iroh)
+## 3. Collaborative presence (iroh-gossip + WASM)
 
-- [ ] 3.1 Add iroh dependency and wire minimal peer connection/bootstrap per design
-- [ ] 3.2 Define presence message payload (participant id, bounds, highlight color)
-- [ ] 3.3 Broadcast local bounds after each completed tile selection
-- [ ] 3.4 Render distinct peer highlight overlays on the local canvas
-- [ ] 3.5 Handle peer disconnect and solo-exploration fallback when P2P unavailable
+- [ ] 3.1 Add `presence-shared/` Rust crate (`iroh`, `iroh-gossip`, `iroh-tickets`, `presets::N0`) modeled on browser-chat
+- [ ] 3.2 Add `presence-wasm/` crate with wasm-bindgen exports (`spawn`, `create`, `join`, ticket serialize, event stream)
+- [ ] 3.3 Wire Vite `build:wasm` script, `vite-plugin-wasm`, and `vite-plugin-top-level-await`; local `file:` dependency on wasm pkg
+- [ ] 3.4 Implement signed presence gossip messages (`bounds` + color) with broadcast on tile change and ~5 s heartbeat
+- [ ] 3.5 Implement session ticket in URL (create/join flow with bootstrap endpoint ids)
+- [ ] 3.6 TypeScript: maintain peer `Map<endpointId, Presence>` from WASM events; draw highlight overlays on canvas
+- [ ] 3.7 Solo-exploration fallback when gossip join fails; optional connection status in UI
+- [ ] 3.8 CI: install `wasm-pack` + `rustup target add wasm32-unknown-unknown` before production build
 
 ## 4. Build and GitHub Pages delivery
 
-- [ ] 4.1 Add GitHub Actions workflow to build and deploy `dist/` to GitHub Pages on `main`
+- [ ] 4.1 Add GitHub Actions workflow: Rust wasm target + wasm-pack + `npm run build:wasm` + `npm run build`, deploy `dist/` to GitHub Pages on `main`
 - [ ] 4.2 Enable GitHub Pages for the repository (workflow or Pages settings as needed)
 - [ ] 4.3 Verify production build locally with `npm run build` and `npm run preview`
 - [ ] 4.4 Verify live GitHub Pages URL loads the explorer and supports tile navigation
@@ -40,5 +43,6 @@
 
 - Arbitrary-precision deep zoom beyond client float precision
 - Named rooms, invites, or server-side matchmaking
+- Dedicated or managed iroh relays (upgrade path if promoted beyond hobby scale)
 - Chat or shared viewport control
 - Native mobile wrappers
