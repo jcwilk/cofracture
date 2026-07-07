@@ -18,6 +18,9 @@ import type { PeerPresence } from "./presence";
 
 const GRID_SIZE = 8;
 const ZOOM_DURATION_MS = 250;
+const TILE_GAP = 1;
+const NEARLY_SQUARE_THRESHOLD = 0.08;
+const ZOOM_OUT_BUTTON_SIZE = 44;
 
 export interface SquareLayout {
   x: number;
@@ -25,24 +28,40 @@ export interface SquareLayout {
   size: number;
 }
 
+interface ParentEntry {
+  bounds: Bounds;
+  row: number;
+  col: number;
+}
+
+export interface ZoomOutButtonPosition {
+  x: number;
+  y: number;
+  visible: boolean;
+}
+
 export class Viewport {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private bounds: Bounds = { ...CANONICAL_BOUNDS };
+  private parentStack: ParentEntry[] = [];
   private animating = false;
   private animStart = 0;
   private animFrom: Bounds = { ...CANONICAL_BOUNDS };
   private animTo: Bounds = { ...CANONICAL_BOUNDS };
   private animRow = 0;
   private animCol = 0;
+  private animZoomIn = true;
   private peers: Map<string, PeerPresence> = new Map();
   private onBoundsChanged: ((bounds: Bounds) => void) | null = null;
+  private onZoomOutAvailabilityChanged: ((available: boolean) => void) | null = null;
+  private onAnimationComplete: (() => void) | null = null;
   private fractalCache: FractalRender | null = null;
   private layoutCache: SquareLayout | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) throw new Error("2d context unavailable");
     this.ctx = ctx;
   }
@@ -51,8 +70,20 @@ export class Viewport {
     this.onBoundsChanged = cb;
   }
 
+  setOnZoomOutAvailabilityChanged(cb: (available: boolean) => void): void {
+    this.onZoomOutAvailabilityChanged = cb;
+  }
+
+  setOnAnimationComplete(cb: () => void): void {
+    this.onAnimationComplete = cb;
+  }
+
   getBounds(): Bounds {
     return { ...this.bounds };
+  }
+
+  canZoomOut(): boolean {
+    return this.parentStack.length > 0 && !this.animating;
   }
 
   setPeers(peers: Map<string, PeerPresence>): void {
@@ -83,6 +114,32 @@ export class Viewport {
     return this.layoutCache;
   }
 
+  computeZoomOutButtonPosition(): ZoomOutButtonPosition {
+    const visible = this.canZoomOut();
+    if (!visible) return { x: 0, y: 0, visible: false };
+
+    const layout = this.computeSquareLayout();
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const margin = Math.max(8, layout.size * 0.02);
+    const aspectDelta = Math.abs(w - h) / Math.max(w, h);
+    const nearlySquare = aspectDelta < NEARLY_SQUARE_THRESHOLD;
+
+    if (nearlySquare) {
+      return { x: margin, y: margin, visible: true };
+    }
+
+    if (w < h) {
+      const x = layout.x + margin;
+      const y = Math.max(margin, layout.y - ZOOM_OUT_BUTTON_SIZE - margin);
+      return { x, y, visible: true };
+    }
+
+    const x = Math.max(margin, layout.x - ZOOM_OUT_BUTTON_SIZE - margin);
+    const y = layout.y + margin;
+    return { x, y, visible: true };
+  }
+
   private tileRectForZoom(size: number, t: number): { x: number; y: number; w: number; h: number } {
     const cell = size / GRID_SIZE;
     const startX = this.animCol * cell;
@@ -101,28 +158,50 @@ export class Viewport {
     const w = window.innerWidth;
     const h = window.innerHeight;
 
-    this.ctx.fillStyle = "#111";
-    this.ctx.fillRect(0, 0, w, h);
+    this.ctx.clearRect(0, 0, w, h);
 
     this.ctx.save();
     this.ctx.translate(layout.x, layout.y);
 
     if (this.animating) {
       const t = Math.min(1, (performance.now() - this.animStart) / ZOOM_DURATION_MS);
-      const tile = this.tileRectForZoom(layout.size, t);
-      const frame = renderZoomFractal(layout.size, layout.size, this.animFrom, this.animTo, tile);
+      const tileT = this.animZoomIn ? t : 1 - t;
+      const tile = this.tileRectForZoom(layout.size, tileT);
+      const frame = renderZoomFractal(
+        layout.size,
+        layout.size,
+        this.animFrom,
+        this.animTo,
+        tile,
+        t,
+        this.animZoomIn,
+      );
       this.ctx.drawImage(frame, 0, 0, layout.size, layout.size);
-      this.drawGrid(layout);
     } else {
       this.ensureFractalCache(this.bounds, layout.size);
       if (this.fractalCache) {
-        drawFractal(this.ctx, this.fractalCache, this.bounds, 0, 0, layout.size, layout.size);
+        this.drawFractalWithGaps(this.fractalCache, this.bounds, layout.size);
       }
       this.drawPeerHighlights(layout, this.bounds);
-      this.drawGrid(layout);
     }
 
     this.ctx.restore();
+  }
+
+  private drawFractalWithGaps(fractal: FractalRender, viewBounds: Bounds, size: number): void {
+    const cell = size / GRID_SIZE;
+    const halfGap = TILE_GAP / 2;
+
+    for (let row = 0; row < GRID_SIZE; row++) {
+      for (let col = 0; col < GRID_SIZE; col++) {
+        const destX = col * cell + halfGap;
+        const destY = row * cell + halfGap;
+        const destW = cell - TILE_GAP;
+        const destH = cell - TILE_GAP;
+        const tile = tileBounds(viewBounds, row, col, GRID_SIZE);
+        drawFractal(this.ctx, fractal, tile, destX, destY, destW, destH);
+      }
+    }
   }
 
   private ensureFractalCache(bounds: Bounds, size: number): void {
@@ -140,23 +219,6 @@ export class Viewport {
 
   private invalidateFractalCache(): void {
     this.fractalCache = null;
-  }
-
-  private drawGrid(layout: SquareLayout): void {
-    const cell = layout.size / GRID_SIZE;
-    this.ctx.strokeStyle = "rgba(255,255,255,0.25)";
-    this.ctx.lineWidth = 1;
-    for (let i = 1; i < GRID_SIZE; i++) {
-      const offset = i * cell;
-      this.ctx.beginPath();
-      this.ctx.moveTo(offset, 0);
-      this.ctx.lineTo(offset, layout.size);
-      this.ctx.stroke();
-      this.ctx.beginPath();
-      this.ctx.moveTo(0, offset);
-      this.ctx.lineTo(layout.size, offset);
-      this.ctx.stroke();
-    }
   }
 
   private drawPeerHighlights(layout: SquareLayout, viewBounds: Bounds): void {
@@ -196,10 +258,32 @@ export class Viewport {
     this.animTo = target;
     this.animRow = row;
     this.animCol = col;
+    this.animZoomIn = true;
     prepareZoomBackground(layout.size, layout.size, this.animFrom);
     this.animStart = performance.now();
     this.animating = true;
     this.animate();
+  }
+
+  zoomOut(): void {
+    if (this.animating || this.parentStack.length === 0) return;
+    const entry = this.parentStack[this.parentStack.length - 1];
+    this.parentStack.pop();
+    this.notifyZoomOutAvailability();
+
+    this.animFrom = { ...this.bounds };
+    this.animTo = { ...entry.bounds };
+    this.animRow = entry.row;
+    this.animCol = entry.col;
+    this.animZoomIn = false;
+    clearZoomBackground();
+    this.animStart = performance.now();
+    this.animating = true;
+    this.animate();
+  }
+
+  private notifyZoomOutAvailability(): void {
+    this.onZoomOutAvailabilityChanged?.(this.canZoomOut());
   }
 
   private animate(): void {
@@ -209,12 +293,21 @@ export class Viewport {
     if (t < 1) {
       requestAnimationFrame(() => this.animate());
     } else {
+      if (this.animZoomIn) {
+        this.parentStack.push({
+          bounds: { ...this.animFrom },
+          row: this.animRow,
+          col: this.animCol,
+        });
+        this.notifyZoomOutAvailability();
+      }
       this.bounds = { ...this.animTo };
       this.animating = false;
       clearZoomBackground();
       this.invalidateFractalCache();
       this.draw();
       this.onBoundsChanged?.(this.bounds);
+      this.onAnimationComplete?.();
     }
   }
 

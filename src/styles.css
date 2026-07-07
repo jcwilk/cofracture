@@ -10,11 +10,58 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #111;
+  background: #0a0a12;
   font-family: system-ui, sans-serif;
 }
 
+#app {
+  position: relative;
+}
+
+.starfield-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  z-index: 0;
+}
+
 .fractal-canvas {
+  position: absolute;
+  inset: 0;
   display: block;
   touch-action: none;
+  z-index: 1;
+  background: transparent;
+}
+
+.zoom-out-btn {
+  position: absolute;
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  background: rgba(20, 20, 30, 0.75);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.zoom-out-btn:hover {
+  background: rgba(40, 40, 55, 0.85);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.zoom-out-btn:focus-visible {
+  outline: 2px solid rgba(120, 170, 255, 0.9);
+  outline-offset: 2px;
+}
+
+.zoom-out-btn[hidden] {
+  display: none;
 }

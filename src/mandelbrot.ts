@@ -71,8 +71,18 @@ export function renderZoomFractal(
   boundsFrom: Bounds,
   boundsTo: Bounds,
   tile: TileRect,
+  progress: number,
+  zoomIn: boolean,
 ): HTMLCanvasElement {
-  return getGlRenderer().renderZoom(width, height, boundsFrom, boundsTo, tile);
+  return getGlRenderer().renderZoom(
+    width,
+    height,
+    boundsFrom,
+    boundsTo,
+    tile,
+    progress,
+    zoomIn,
+  );
 }
 
 /** Blit a sub-region of a cached fractal bitmap (respects canvas transforms). */
