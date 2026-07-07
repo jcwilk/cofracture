@@ -4,13 +4,13 @@
 - [ ] 1.2 Create `src/mesh-discovery.ts` with fixed swarm identity, payload encode/decode (`endpoint_id`, `mesh_id`, `mesh_formed_at`, `seq`), and `localStorage` seq persistence
 - [ ] 1.3 Implement initial listen window (10 s) collecting advertisements with per-endpoint seq validation and mesh grouping
 - [ ] 1.4 Implement mesh selection (oldest `mesh_formed_at` wins) and new-mesh formation when none discovered
-- [ ] 1.5 Implement periodic seeding with base 2 s interval, backoff from distinct advertiser count, and ±10% jitter
+- [ ] 1.5 Implement periodic seeding with base 2 s interval, backoff from distinct advertiser count (45 s validity window), and ±10% jitter
 - [ ] 1.6 Implement ongoing merge listener: switch to older mesh when live bootstrap targets are reachable
 
 ## 2. Gossip topic and WASM join
 
 - [ ] 2.1 Derive gossip topic identity deterministically from `mesh_id` (replace fixed global topic for discovery-based join)
-- [ ] 2.2 Extend or adjust WASM join API so TypeScript passes mesh topic plus discovery-sourced bootstrap endpoint ids
+- [ ] 2.2 Extend or adjust WASM join API so TypeScript passes mesh topic plus discovery-sourced bootstrap endpoint ids, with at most 3 concurrent outbound dials and slot refill from a candidate queue on failure
 - [ ] 2.3 Rebuild `presence-wasm` release artifacts after Rust changes
 
 ## 3. Presence orchestration
@@ -34,6 +34,6 @@
 
 ## Explicitly deferred
 
-- Signed discovery payloads with iroh node secret key (design open question; unsigned v1 is acceptable)
-- Custom WebSocket tracker infrastructure beyond public defaults
+- Custom WebSocket tracker infrastructure beyond WebTorrent library defaults (only if default trackers fail in testing)
 - DHT-only discovery without WebTorrent trackers
+- Signed discovery payloads (rejected — no client-side trust benefit; see `design.md`)

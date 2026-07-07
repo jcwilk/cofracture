@@ -24,7 +24,7 @@ WebTorrent provides a browser-compatible public rendezvous: participants seed sm
 **Goals:**
 
 - Strangers opening the same site URL within a reasonable window discover each other and share presence highlights.
-- Discovery payloads are small, signed or self-consistent enough to ignore obvious garbage, and include enough metadata to pick one mesh and merge splits.
+- Discovery payloads are small, structurally valid, and include enough metadata to pick one mesh and merge splits.
 - All mesh participants share advertising load with automatic spacing when many peers advertise.
 - Sequence numbers per advertiser survive page reloads so stale torrent payloads are ignored.
 - Mesh splits converge: when a client learns of an older mesh, it switches rather than perpetuating parallel meshes.
@@ -59,8 +59,6 @@ Each seeded payload is a compact JSON document (UTF-8) with these fields:
 | `mesh_id` | string | Random id (e.g. 128-bit hex) identifying the gossip mesh this client believes it is in |
 | `mesh_formed_at` | number | Unix epoch ms when this mesh was first formed (by the founding client) |
 | `seq` | integer | Monotonic per-client advertisement sequence; persisted in `localStorage` under a discovery-specific key so reloads continue the sequence |
-
-Optional future fields (not required for v1): signature over payload bytes with node secret key.
 
 **Topic binding:** Gossip `TopicId` is **derived deterministically from `mesh_id`** (e.g. SHA-256 truncated to topic bytes) so each mesh has an isolated gossip topic. The previous fixed global topic is retired when discovery lands.
 
@@ -97,7 +95,7 @@ This biases split partitions toward the longest-lived mesh.
 
 ### Decision: Shared advertising with backoff
 
-Count **distinct `endpoint_id`s** currently advertising the **same `mesh_id`** (seen within a recent validity window, e.g. last 30 s). Let `K` be that count.
+Count **distinct `endpoint_id`s** currently advertising the **same `mesh_id`** (seen within the advertisement validity window; see below). Let `K` be that count.
 
 Base interval `T0 = 2 s`. Actual interval:
 
@@ -139,6 +137,32 @@ Remove or stop writing legacy `cofracture-presence-bootstrap` localStorage cache
 
 Dependency: `webtorrent` npm package (+ types); verify Vite bundling and bundle size budget.
 
+### Decision: Unsigned discovery payloads (no signing)
+
+Advertisements are **unsigned JSON**. Do not add iroh secret-key signatures in v1.
+
+**Rationale:** Discovery is entirely client-side with no verifier. Any visitor can generate keys and sign arbitrary payloads, so signing does not establish trust—it only adds WASM work and payload size. Actual liveness is proven when iroh dials succeed; dead or spoofed endpoint ids fail harmlessly. Per-advertiser `seq` monotonicity plus structural validation is sufficient to ignore replayed blobs and obvious garbage. Strong identity guarantees belong in gossip (signed presence messages), not in the public rendezvous layer.
+
+### Decision: Tracker list (implementation default)
+
+Use the **WebTorrent client library's default public tracker list** for browser builds, extended only if apply-time testing shows common networks block them. Do not operate custom tracker infrastructure for v1.
+
+Implementation picks the concrete tracker array at build time based on what the bundled WebTorrent version recommends and what succeeds in CI smoke tests.
+
+### Decision: Advertisement validity window (45 s)
+
+An advertisement counts as **live** for mesh selection, merge decisions, and backoff participant counting only if its advertiser has published a valid (accepted seq) advertisement within the **last 45 seconds**.
+
+**Rationale:** Base re-advertise interval is 2 s; with backoff at `K=50` peers the interval reaches 20 s. Forty-five seconds covers two missed cycles at that load plus tracker jitter, without keeping departed peers in the live set long enough to materially skew backoff or merge logic. Advertisers who stop publishing fall out of `K` within one window; merge attempts ignore bootstrap targets whose latest valid advertisement is older than 45 s.
+
+### Decision: Bounded bootstrap dial concurrency (3 in flight)
+
+When bootstrapping or merging, maintain at most **3 concurrent outbound iroh dials** to discovery-sourced endpoint candidates. Keep a queue of remaining candidates; as a dial **fails** or **times out**, refill the slot from the queue until a neighbor connection succeeds or candidates are exhausted.
+
+Dial order: prefer candidates with the **highest recent seq** (freshest advertisement) among those still within the validity window. Do not dial self. Successful connection to any candidate in the target mesh is enough—gossip fan-out reaches remaining peers afterward.
+
+**Rationale:** Caps connection storm on join (many advertisers × many joiners) while still allowing strangers to bootstrap through a small live subset. Failed dials are expected for stale endpoint ids; slot refill explores alternatives without unbounded parallelism.
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
@@ -147,7 +171,7 @@ Dependency: `webtorrent` npm package (+ types); verify Vite bundling and bundle 
 | Large bundle size | Lazy-import WebTorrent after WASM init; measure CI bundle budget |
 | Split meshes during listen window | Merge-toward-oldest after join; continued listening |
 | Stale endpoint ids in advertisements | iroh dial failures are non-fatal; seq discard; gossip neighbor events prune dead peers |
-| Malicious spam advertisements | seq + ignore self; optional signed payloads later; rate-limit processing |
+| Malicious spam advertisements | seq + ignore self; structural validation; bounded dial concurrency; rate-limit processing |
 | Privacy: endpoint ids public on trackers | Acceptable for public toy; document in README |
 | Mesh merge mid-session may briefly drop highlights | Re-subscribe gossip; re-broadcast bounds after merge |
 
@@ -161,9 +185,11 @@ Dependency: `webtorrent` npm package (+ types); verify Vite bundling and bundle 
 
 Rollback: revert to ticket + global topic join path (previous commit); no server migration needed.
 
-## Open Questions
+## Resolved decisions (reviewer input)
 
-- **Signed payloads:** Ship unsigned v1 or require iroh secret-key signature in advertisement JSON from day one?
-- **Tracker list:** Default public WebTorrent trackers only, or also WebSocket trackers for restrictive networks?
-- **Validity window:** How long is an advertisement considered "live" for backoff counting if seq stops incrementing?
-- **Maximum bootstrap fan-out:** Dial all advertised endpoints or cap parallel dials while still allowing full mesh via gossip fan-out?
+| Topic | Decision |
+|-------|----------|
+| Signed payloads | **No** — unsigned JSON only; signing adds no trust in an all-client model |
+| Tracker list | WebTorrent library defaults; extend only if testing requires it |
+| Validity window | **45 s** since last accepted seq from an advertiser |
+| Bootstrap fan-out | **Max 3** concurrent outbound dials; refill slots from queue on failure |
