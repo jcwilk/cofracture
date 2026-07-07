@@ -1,12 +1,13 @@
 ## ADDED Requirements
 
 ### Requirement: Visitor can zoom out one level at a time
-The application SHALL provide a dedicated zoom-out control that returns the view to the parent region from the previous tile zoom, using a quick linear transition comparable to tile zoom-in, until the canonical region is reached.
+The application SHALL provide a dedicated zoom-out control that returns the view to the parent region from the previous tile zoom, using a quick linear transition that mirrors tile zoom-in in reverse, until the canonical region is reached.
 
 #### Scenario: Zoom out after a tile zoom
 - **GIVEN** a visitor has zoomed into the fractal at least once by selecting a tile
 - **WHEN** they activate the zoom-out control
-- **THEN** the view animates back to the region that was visible before the most recent tile zoom
+- **THEN** the current view shrinks into the tile position from the most recent zoom
+- **AND** the parent view fades in around it as the starfield shows through the transitioning outer area
 - **AND** the visible square is again partitioned into an 8×8 tile grid after the transition completes
 
 #### Scenario: Zoom out at canonical depth
@@ -52,3 +53,18 @@ The 8×8 tile grid SHALL separate adjacent tiles with narrow gaps that show the 
 - **GIVEN** the tile grid is visible over the fractal
 - **WHEN** a visitor looks at the boundaries between neighboring tiles
 - **THEN** they see the starfield through the gap instead of a solid gray divider line
+
+## MODIFIED Requirements
+
+### Requirement: Tile selection zooms and recenters the view
+When a visitor selects a tile, the application SHALL animate the view so that the selected tile's region becomes the full visible square. During the transition, the region outside the selected tile's growing area SHALL fade toward transparency so the starfield behind the view becomes increasingly visible as the selected tile expands.
+
+#### Scenario: Tap selects and zooms a tile on mobile
+- **WHEN** a visitor taps a tile on a touch-capable device
+- **THEN** the tapped tile's region grows until it fills the visible square
+- **AND** the surrounding area shows the pre-zoom view fading out so the starfield bleeds through as the tile expands
+
+#### Scenario: Click selects and zooms a tile on pointer devices
+- **WHEN** a visitor clicks a tile with a pointing device
+- **THEN** the clicked tile's region grows until it fills the visible square
+- **AND** the surrounding area shows the pre-zoom view fading out so the starfield bleeds through as the tile expands

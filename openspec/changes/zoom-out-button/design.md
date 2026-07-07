@@ -13,7 +13,7 @@ The viewport currently fills letterbox margins with flat `#111` and draws the 8�
 - One tap/click zooms out exactly one level with a transition consistent with zoom-in (linear, ~250 ms).
 - Control is visible and reachable on mobile and desktop without blocking tile selection at the grid’s upper-left cell.
 - Placement respects letterboxing: sits in the margin beside the render square when portrait or landscape; falls back to viewport corner when aspect ratio is nearly square.
-- A subtle, low-contrast starfield fills the viewport behind the fractal; tile boundaries are narrow gaps that reveal the starfield rather than painted gray rules.
+- A subtle starfield behind the fractal; tile gaps reveal it; zoom transitions fade the non-active region to or from the starfield while the active tile expands or shrinks.
 
 **Non-Goals:**
 
@@ -26,11 +26,29 @@ The viewport currently fills letterbox margins with flat `#111` and draws the 8�
 
 ### Decision: Parent bounds stack on zoom-in
 
-Push the current `bounds` onto a stack before each completed tile zoom-in. Zoom-out pops one entry and animates back to that parent bounds (inverse of zoom-in: shrink current view into the cell that was last selected, or simpler **bounds lerp** from current to parent over the same duration).
+Push the current `bounds` onto a stack before each completed tile zoom-in, together with the **tile coordinates** `(row, col)` used for that zoom. Zoom-out pops both and runs the **inverse tile animation** (see below).
 
-**Simpler v1 animation:** Lerp complex-plane `bounds` from current to parent over `ZOOM_DURATION_MS` (whole-frame bounds interpolation for zoom-out only). Zoom-in keeps the existing tile-grow composite; zoom-out may use bounds lerp since reversing the exact tile shrink is harder without storing last `(row, col)`. Outward behavior is still visually clear.
+### Decision: Zoom-in outer region fades to starfield
 
-**Alternative considered:** Store last `(row, col)` per level and mirror zoom-in shader in reverse — more faithful but more work; defer unless bounds lerp feels wrong.
+During tile zoom-in (existing expand animation):
+
+- The **selected tile** region grows and remains fully opaque with the target (inner) fractal detail.
+- The **surrounding area** continues to show the pre-zoom snapshot but its **opacity decreases linearly** over the transition (1 → 0), revealing the starfield layer beneath as the tile expands.
+- Implement via WebGL zoom composite: multiply pre-zoom background texture alpha by `(1 - t)` where `t` is linear progress, or equivalent canvas compositing.
+
+This replaces the current behavior where the outer region stays fully opaque until the transition ends.
+
+### Decision: Zoom-out mirrors zoom-in with fade-in from starfield
+
+Zoom-out is the **reverse** of zoom-in, not a whole-frame bounds morph:
+
+- The **current view** shrinks linearly into the grid cell identified by the stored `(row, col)` from the level being exited.
+- The **parent view** fades **in** around that shrinking region: opacity rises from 0 → 1 over the same duration while the starfield shows through the fading outer area early in the transition.
+- On completion, bounds return to the popped parent and the grid is redrawn at the parent scale.
+
+Requires extending `prepareZoomBackground` / zoom shader path for outbound direction or a symmetric primitive parameterized by `t` vs `1-t`.
+
+**Supersedes** earlier bounds-lerp shortcut for zoom-out.
 
 ### Decision: Control availability
 
@@ -93,10 +111,12 @@ Starfield also visible in **letterbox margins** (portrait top/bottom, landscape 
 | Risk | Mitigation |
 |------|------------|
 | Button overlaps upper-left tile | Offset into letterbox margin; on near-square use small inset from corner |
-| Bounds lerp zoom-out looks different from zoom-in | Accept for v1; revisit reverse tile animation if reviewers care |
+| Bounds lerp zoom-out looks different from zoom-in | Use symmetric tile shrink + fade-in; store `(row, col)` on stack |
 | Stack desync if bounds change elsewhere | Only push on completed zoom-in; clear stack on full reset (future) |
 | Starfield hurts fractal contrast | Keep stars dim; limit count; no large flares |
 | Gap rendering costs perf | 1 px gutters; starfield is cheap static points with rare redraw |
+
+| Zoom fade compositing perf | Single background texture per transition; same duration as today (~250 ms) |
 
 ## Migration Plan
 
@@ -104,4 +124,4 @@ Ship in one apply pass; no data migration. Existing sessions simply start with e
 
 ## Open Questions
 
-- None blocking — square threshold `0.08` and bounds-lerp vs reverse-tile animation can be tuned during apply.
+- None blocking — square threshold `0.08` and exact fade curve can be tuned during apply.

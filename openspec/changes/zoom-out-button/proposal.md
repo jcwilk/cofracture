@@ -9,6 +9,8 @@ Visitors can zoom into the Mandelbrot set by selecting tiles, but there is no wa
 - **Zoom-out behavior**: each activation reverses one tile zoom level, using the same quick linear transition style as zoom-in, until the visitor returns to the canonical region.
 - At the canonical zoom level, the control is not offered (hidden or disabled).
 - Add a **subtle floating starfield** behind the fractal view, visible in letterbox margins and **through the gaps between tiles** instead of opaque gray grid lines.
+- **Zoom-in animation**: as the selected tile expands, the surrounding pre-zoom view **fades out** so the starfield bleeds through; the expanding tile stays opaque.
+- **Zoom-out animation** (reverse): the current view **shrinks into the tile** it came from while the parent view **fades in from the starfield** around it.
 
 ## Capabilities
 
@@ -18,14 +20,14 @@ Visitors can zoom into the Mandelbrot set by selecting tiles, but there is no wa
 
 ### Modified Capabilities
 
-- `fractal-viewport`: zoom-out navigation control, placement relative to letterboxed render field, parent-level zoom reversal, and starfield background visible through tile gaps
+- `fractal-viewport`: zoom-out control; starfield background; tile-gap grid; zoom transitions with outer-region fade to/from starfield
 
 ## Impact
 
 - Viewport navigation state (parent bounds history on zoom-in)
 - UI overlay or DOM control positioned from `computeSquareLayout()` letterbox geometry
-- Background starfield layer and grid rendering so inter-tile gaps reveal it
-- `src/viewport.ts`, `src/main.ts`, `src/styles.css` (apply phase)
+- Zoom transition rendering (fade compositing in zoom-in/out shaders or canvas path)
+- `src/viewport.ts`, `src/mandelbrot-gl.ts`, `src/main.ts`, `src/styles.css` (apply phase)
 - Living `openspec/specs/fractal-viewport/spec.md` after archive
 
 ## Non-Goals
