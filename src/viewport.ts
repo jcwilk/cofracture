@@ -1,6 +1,7 @@
 import {
   CANONICAL_BOUNDS,
   boundsEqual,
+  peerHighlightIsViewOutline,
   tileBounds,
   type Bounds,
 } from "./bounds";
@@ -160,12 +161,18 @@ export class Viewport {
 
   private drawPeerHighlights(layout: SquareLayout, viewBounds: Bounds): void {
     for (const peer of this.peers.values()) {
-      const rect = boundsToScreen(peer.bounds, viewBounds, 0, 0, layout.size);
+      const outlineOnly = peerHighlightIsViewOutline(peer.bounds, viewBounds);
+      const rect = outlineOnly
+        ? { x: 0, y: 0, w: layout.size, h: layout.size }
+        : boundsToScreen(peer.bounds, viewBounds, 0, 0, layout.size);
+
       this.ctx.strokeStyle = peer.color;
       this.ctx.lineWidth = 3;
       this.ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-      this.ctx.fillStyle = peer.color + "33";
-      this.ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+      if (!outlineOnly) {
+        this.ctx.fillStyle = peer.color + "33";
+        this.ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+      }
     }
   }
 
@@ -175,9 +182,9 @@ export class Viewport {
     const x = clientX - layout.x;
     const y = clientY - layout.y;
     if (x < 0 || y < 0 || x >= layout.size || y >= layout.size) return null;
-    const col = Math.floor((x / layout.size) * GRID_SIZE);
-    const row = Math.floor((y / layout.size) * GRID_SIZE);
-    if (row < 0 || row >= GRID_SIZE || col < 0 || col >= GRID_SIZE) return null;
+    const cell = layout.size / GRID_SIZE;
+    const col = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(x / cell)));
+    const row = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(y / cell)));
     return { row, col };
   }
 

@@ -1,4 +1,7 @@
 import type { Bounds } from "./bounds";
+import { tileIndexFromBounds, tileIndexToScreen } from "./bounds";
+
+const GRID_SIZE = 8;
 import { MandelbrotGlRenderer, type TileRect } from "./mandelbrot-gl";
 
 export interface FractalRender {
@@ -103,6 +106,17 @@ export function boundsToScreen(
 ): { x: number; y: number; w: number; h: number } {
   const reSpan = viewBounds.reMax - viewBounds.reMin;
   const imSpan = viewBounds.imMax - viewBounds.imMin;
+  const reCell = reSpan / GRID_SIZE;
+  const imCell = imSpan / GRID_SIZE;
+
+  const wCells = (bounds.reMax - bounds.reMin) / reCell;
+  const hCells = (bounds.imMax - bounds.imMin) / imCell;
+
+  // Peer focus is usually a single grid cell — snap to the same grid as hit-testing.
+  if (wCells > 0.5 && wCells < 1.5 && hCells > 0.5 && hCells < 1.5) {
+    const { row, col } = tileIndexFromBounds(bounds, viewBounds, GRID_SIZE);
+    return tileIndexToScreen(row, col, squareX, squareY, squareSize, GRID_SIZE);
+  }
 
   const x = squareX + ((bounds.reMin - viewBounds.reMin) / reSpan) * squareSize;
   const w = ((bounds.reMax - bounds.reMin) / reSpan) * squareSize;

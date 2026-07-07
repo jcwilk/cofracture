@@ -40,3 +40,53 @@ export function boundsEqual(a: Bounds, b: Bounds, epsilon = 1e-12): boolean {
     Math.abs(a.imMax - b.imMax) < epsilon
   );
 }
+
+/** True when `outer` fully covers `inner` on the complex plane. */
+export function boundsContains(outer: Bounds, inner: Bounds, epsilon = 1e-9): boolean {
+  return (
+    outer.reMin <= inner.reMin + epsilon &&
+    outer.reMax >= inner.reMax - epsilon &&
+    outer.imMin <= inner.imMin + epsilon &&
+    outer.imMax >= inner.imMax - epsilon
+  );
+}
+
+/** Outline-only peer highlight when their region matches or surrounds our view. */
+export function peerHighlightIsViewOutline(peer: Bounds, view: Bounds): boolean {
+  return boundsEqual(peer, view) || boundsContains(peer, view);
+}
+
+/** Inverse of `tileBounds` for a single grid cell within `view`. */
+export function tileIndexFromBounds(
+  bounds: Bounds,
+  view: Bounds,
+  gridSize = 8,
+): { row: number; col: number } {
+  const reSpan = view.reMax - view.reMin;
+  const imSpan = view.imMax - view.imMin;
+  const reMid = (bounds.reMin + bounds.reMax) / 2;
+  const imMid = (bounds.imMin + bounds.imMax) / 2;
+  const col = Math.round(((reMid - view.reMin) / reSpan) * gridSize - 0.5);
+  const row = Math.round(((view.imMax - imMid) / imSpan) * gridSize - 0.5);
+  return {
+    row: Math.min(gridSize - 1, Math.max(0, row)),
+    col: Math.min(gridSize - 1, Math.max(0, col)),
+  };
+}
+
+export function tileIndexToScreen(
+  row: number,
+  col: number,
+  squareX: number,
+  squareY: number,
+  squareSize: number,
+  gridSize = 8,
+): { x: number; y: number; w: number; h: number } {
+  const cell = squareSize / gridSize;
+  return {
+    x: squareX + col * cell,
+    y: squareY + row * cell,
+    w: cell,
+    h: cell,
+  };
+}
