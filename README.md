@@ -37,8 +37,7 @@ Preview serves at http://localhost:4173/cofracture/.
 ## Usage
 
 - **Navigate:** tap or click a tile to zoom into that region (8×8 grid subdivides after each zoom).
-- **Collaborate:** use **Share session** to copy a URL with an iroh session ticket; open it in another browser to see peer tile highlights.
-- **Solo mode:** if gossip cannot connect, local exploration continues without peer overlays.
+- **Collaborate:** everyone shares one global presence room — peer tile highlights appear automatically when others are exploring at the same time.
 
 ## OpenSpec Flow
 

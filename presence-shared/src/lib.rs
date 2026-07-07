@@ -5,7 +5,8 @@ use std::{
 
 use anyhow::{Context, Result};
 pub use iroh::EndpointId;
-use iroh::{PublicKey, SecretKey, Signature, protocol::Router};
+use iroh::{EndpointAddr, PublicKey, SecretKey, Signature, protocol::Router};
+use sha2::{Digest, Sha256};
 pub use iroh_gossip::proto::TopicId;
 use iroh_gossip::{
     api::{Event as GossipEvent, GossipSender},
@@ -15,14 +16,31 @@ use iroh_tickets::Ticket;
 use n0_future::{
     StreamExt,
     boxed::BoxStream,
-    task::{self, AbortOnDropHandle},
-    time::{Duration, SystemTime},
+    task::{self, AbortOnDropHandle, JoinSet},
+    time::{Duration, SystemTime, timeout},
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as TokioMutex, Notify};
 use tracing::{debug, info, warn};
 
 pub const PRESENCE_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_CONCURRENT_BOOTSTRAP_DIALS: usize = 3;
+const BOOTSTRAP_DIAL_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Derive an isolated gossip topic from a mesh identity string.
+pub fn topic_id_from_mesh_id(mesh_id: &str) -> TopicId {
+    let hash = Sha256::digest(mesh_id.as_bytes());
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&hash);
+    TopicId::from_bytes(bytes)
+}
+
+pub fn mesh_ticket(mesh_id: &str, bootstrap: BTreeSet<EndpointId>) -> PresenceTicket {
+    PresenceTicket {
+        topic_id: topic_id_from_mesh_id(mesh_id),
+        bootstrap,
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PresenceBounds {
@@ -107,15 +125,30 @@ impl PresenceNode {
         self.router.endpoint().id()
     }
 
+    pub async fn join_mesh(
+        &self,
+        mesh_id: &str,
+        bootstrap_candidates: Vec<EndpointId>,
+    ) -> Result<(PresenceSender, BoxStream<Result<Event>>)> {
+        let topic_id = topic_id_from_mesh_id(mesh_id);
+        let bootstrap = dial_bootstrap_peers(self.router.endpoint(), bootstrap_candidates).await;
+        let ticket = PresenceTicket {
+            topic_id,
+            bootstrap: bootstrap.into_iter().collect(),
+        };
+        self.join(&ticket).await
+    }
+
     pub async fn join(
         &self,
         ticket: &PresenceTicket,
     ) -> Result<(PresenceSender, BoxStream<Result<Event>>)> {
         let topic_id = ticket.topic_id;
-        let bootstrap = ticket.bootstrap.iter().cloned().collect();
+        let bootstrap: Vec<EndpointId> = ticket.bootstrap.iter().cloned().collect();
         info!(?bootstrap, "joining {topic_id}");
         let gossip_topic = self.gossip.subscribe(topic_id, bootstrap).await?;
         let (sender, receiver) = gossip_topic.split();
+        let can_broadcast = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let presence_state = Arc::new(Mutex::new(PresenceState::default()));
         let trigger_presence = Arc::new(Notify::new());
@@ -126,19 +159,21 @@ impl PresenceNode {
             let sender = sender.clone();
             let trigger_presence = trigger_presence.clone();
             let presence_state = presence_state.clone();
+            let can_broadcast = can_broadcast.clone();
 
             async move {
                 loop {
-                    let state = presence_state.lock().expect("poisoned").clone();
-                    if let Some((bounds, color)) = state.bounds.zip(state.color) {
-                        let message = Message::Presence { bounds, color };
-                        debug!("send presence {message:?}");
-                        let signed_message = SignedMessage::sign_and_encode(&secret_key, message)
-                            .expect("failed to encode message");
-                        if let Err(err) = sender.lock().await.broadcast(signed_message.into()).await
-                        {
-                            warn!("presence task failed to broadcast: {err}");
-                            break;
+                    if can_broadcast.load(std::sync::atomic::Ordering::Acquire) {
+                        let state = presence_state.lock().expect("poisoned").clone();
+                        if let Some((bounds, color)) = state.bounds.zip(state.color) {
+                            let message = Message::Presence { bounds, color };
+                            debug!("send presence {message:?}");
+                            let signed_message = SignedMessage::sign_and_encode(&secret_key, message)
+                                .expect("failed to encode message");
+                            if let Err(err) = sender.lock().await.broadcast(signed_message.into()).await
+                            {
+                                warn!("presence broadcast failed (retrying): {err}");
+                            }
                         }
                     }
                     n0_future::future::race(
@@ -152,8 +187,10 @@ impl PresenceNode {
 
         let receiver = n0_future::stream::try_unfold(receiver, {
             let trigger_presence = trigger_presence.clone();
+            let can_broadcast = can_broadcast.clone();
             move |mut receiver| {
                 let trigger_presence = trigger_presence.clone();
+                let can_broadcast = can_broadcast.clone();
                 async move {
                     loop {
                         let was_joined = receiver.is_joined();
@@ -168,6 +205,7 @@ impl PresenceNode {
                             }
                         };
                         if !was_joined && receiver.is_joined() {
+                            can_broadcast.store(true, std::sync::atomic::Ordering::Release);
                             trigger_presence.notify_waiters();
                         }
                         break Ok(Some((event, receiver)));
@@ -333,4 +371,43 @@ pub struct ReceivedMessage {
     timestamp: u64,
     from: EndpointId,
     message: Message,
+}
+
+async fn dial_bootstrap_peers(
+    endpoint: &iroh::Endpoint,
+    mut candidates: Vec<EndpointId>,
+) -> Vec<EndpointId> {
+    let my_id = endpoint.id();
+    candidates.retain(|id| *id != my_id);
+
+    while !candidates.is_empty() {
+        let batch_size = candidates.len().min(MAX_CONCURRENT_BOOTSTRAP_DIALS);
+        let batch: Vec<EndpointId> = candidates.drain(..batch_size).collect();
+        let mut joins = JoinSet::new();
+        for id in batch {
+            let endpoint = endpoint.clone();
+            joins.spawn(async move {
+                let addr = EndpointAddr::from(id);
+                match timeout(BOOTSTRAP_DIAL_TIMEOUT, endpoint.connect(addr, GOSSIP_ALPN)).await {
+                    Ok(Ok(_)) => Some(id),
+                    Ok(Err(err)) => {
+                        debug!("bootstrap dial to {id} failed: {err}");
+                        None
+                    }
+                    Err(_) => {
+                        debug!("bootstrap dial to {id} timed out");
+                        None
+                    }
+                }
+            });
+        }
+
+        while let Some(result) = joins.join_next().await {
+            if let Ok(Some(id)) = result {
+                return vec![id];
+            }
+        }
+    }
+
+    vec![]
 }

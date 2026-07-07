@@ -1,4 +1,10 @@
 import type { Bounds } from "./bounds";
+import {
+  MeshDiscovery,
+  runInitialDiscovery,
+  type MeshCandidate,
+  type MeshState,
+} from "./mesh-discovery";
 
 export interface PeerPresence {
   endpointId: string;
@@ -34,66 +40,191 @@ export function colorForEndpoint(endpointId: string): string {
   return PALETTE[hash % PALETTE.length];
 }
 
-export type ConnectionStatus = "connecting" | "connected" | "solo";
-
 export interface PresenceManager {
   peers: Map<string, PeerPresence>;
-  status: ConnectionStatus;
   myEndpointId: string;
   myColor: string;
-  shareUrl: () => string;
   broadcastBounds: (bounds: Bounds) => Promise<void>;
   onPeersChanged: (() => void) | null;
 }
 
-const TICKET_PARAM = "ticket";
-const JOIN_TIMEOUT_MS = 15_000;
+const TAB_CHANNEL = "cofracture-presence-tabs";
+const DISCOVERY_MS = 800;
+
+let activeNode: import("presence-wasm").PresenceNode | null = null;
+
+async function discoverSiblingEndpoints(myEndpointId: string): Promise<string[]> {
+  const found = new Set<string>();
+  const channel = new BroadcastChannel(TAB_CHANNEL);
+
+  await new Promise<void>((resolve) => {
+    window.setTimeout(() => {
+      channel.close();
+      resolve();
+    }, DISCOVERY_MS);
+
+    channel.onmessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; endpointId?: string };
+      const id = data.endpointId;
+      if (!id || id === myEndpointId) return;
+
+      if (data.type === "announce" || data.type === "hello") {
+        found.add(id);
+        channel.postMessage({ type: "hello", endpointId: myEndpointId });
+      }
+    };
+
+    channel.postMessage({ type: "announce", endpointId: myEndpointId });
+  });
+
+  return [...found];
+}
+
+function mergeBootstrapIds(
+  myEndpointId: string,
+  discoveryIds: string[],
+  siblings: string[],
+): string[] {
+  return [
+    ...new Set(
+      [...discoveryIds, ...siblings].filter((id) => id && id !== myEndpointId),
+    ),
+  ];
+}
+
+async function shutdownActiveNode(): Promise<void> {
+  if (!activeNode) return;
+  const node = activeNode;
+  activeNode = null;
+  try {
+    await node.shutdown();
+  } catch (err) {
+    console.warn("presence shutdown failed:", err);
+  }
+}
+
+function bindLifecycle(
+  node: import("presence-wasm").PresenceNode,
+  discovery: MeshDiscovery | null,
+): void {
+  const shutdown = () => {
+    discovery?.stop();
+    void node.shutdown();
+  };
+  window.addEventListener("pagehide", shutdown);
+  const hot = (import.meta as ImportMeta & { hot?: { dispose(cb: () => void): void } }).hot;
+  if (hot) {
+    hot.dispose(() => {
+      discovery?.stop();
+      void shutdownActiveNode();
+    });
+  }
+}
 
 export async function initPresence(): Promise<PresenceManager> {
+  await shutdownActiveNode();
+
   const peers = new Map<string, PeerPresence>();
-  let status: ConnectionStatus = "connecting";
   let myEndpointId = "";
   let myColor = "#888";
-  let session: import("presence-wasm").Session | null = null;
-  let sender: import("presence-wasm").SessionSender | null = null;
+  let session: import("presence-wasm").Session;
+  let sender: import("presence-wasm").SessionSender;
   let onPeersChanged: (() => void) | null = null;
+  let latestBounds: Bounds | null = null;
+  let merging = false;
 
   const notify = () => onPeersChanged?.();
 
-  try {
-    const wasm = await import("presence-wasm");
-    const node = await wasm.PresenceNode.spawn();
-    myEndpointId = node.endpoint_id();
-    myColor = colorForEndpoint(myEndpointId);
+  const wasm = await import("presence-wasm");
+  const node = await wasm.PresenceNode.spawn();
+  activeNode = node;
 
-    const params = new URLSearchParams(window.location.search);
-    const ticketFromUrl = params.get(TICKET_PARAM);
+  myEndpointId = node.endpoint_id();
+  myColor = colorForEndpoint(myEndpointId);
 
-    if (ticketFromUrl) {
-      session = await node.join(ticketFromUrl);
-    } else {
-      session = await node.create();
-      updateUrlWithTicket(session);
+  const siblingsPromise = discoverSiblingEndpoints(myEndpointId);
+  const initialDiscovery = await runInitialDiscovery(myEndpointId);
+  const discovery = initialDiscovery.discovery;
+  bindLifecycle(node, discovery);
+
+  const siblings = await siblingsPromise;
+  let mesh: MeshState = initialDiscovery.mesh;
+  const bootstrapIds = mergeBootstrapIds(
+    myEndpointId,
+    initialDiscovery.bootstrapEndpointIds,
+    siblings,
+  );
+
+  session = await node.join_mesh(mesh.meshId, bootstrapIds);
+  sender = session.sender;
+  let eventReader = session.receiver.getReader();
+
+  await discovery.startAdvertising();
+
+  discovery.onOlderMesh((older: MeshCandidate) => {
+    void attemptMerge(older);
+  });
+
+  async function attemptMerge(older: MeshCandidate): Promise<void> {
+    if (merging || older.meshFormedAt >= mesh.meshFormedAt) return;
+    merging = true;
+    try {
+      const bootstrap = mergeBootstrapIds(
+        myEndpointId,
+        discovery.bootstrapForMesh(older.meshId),
+        await discoverSiblingEndpoints(myEndpointId),
+      );
+      const nextSession = await node.join_mesh(older.meshId, bootstrap);
+      eventReader.cancel().catch(() => {});
+      session = nextSession;
+      sender = nextSession.sender;
+      eventReader = nextSession.receiver.getReader();
+      mesh = {
+        meshId: older.meshId,
+        meshFormedAt: older.meshFormedAt,
+      };
+      discovery.adoptMesh(mesh);
+      peers.clear();
+      pumpEvents();
+      notify();
+      if (latestBounds) {
+        await sender.broadcast_presence(
+          latestBounds.reMin,
+          latestBounds.reMax,
+          latestBounds.imMin,
+          latestBounds.imMax,
+          myColor,
+        );
+      }
+    } catch (err) {
+      console.warn("mesh merge failed:", err);
+    } finally {
+      merging = false;
     }
-
-    sender = session.sender;
-    listenForEvents(session, peers, myEndpointId, notify);
-
-    const joined = await waitForJoin(session, JOIN_TIMEOUT_MS);
-    status = joined ? "connected" : "solo";
-  } catch (err) {
-    console.warn("Presence unavailable, solo mode:", err);
-    status = "solo";
   }
 
+  function pumpEvents(): void {
+    const pump = async () => {
+      try {
+        while (true) {
+          const { value, done } = await eventReader.read();
+          if (done) break;
+          if (!value) continue;
+          handleEvent(value, peers, myEndpointId, notify);
+        }
+      } catch (err) {
+        console.warn("presence event stream ended:", err);
+      }
+    };
+    pump();
+  }
+
+  pumpEvents();
   notify();
 
   return {
     get peers() {
       return peers;
-    },
-    get status() {
-      return status;
     },
     get myEndpointId() {
       return myEndpointId;
@@ -107,19 +238,8 @@ export async function initPresence(): Promise<PresenceManager> {
     set onPeersChanged(cb: (() => void) | null) {
       onPeersChanged = cb;
     },
-    shareUrl(): string {
-      if (!session) return window.location.href;
-      const ticket = session.ticket({
-        includeMyself: true,
-        includeBootstrap: true,
-        includeNeighbors: true,
-      });
-      const url = new URL(window.location.href);
-      url.searchParams.set(TICKET_PARAM, ticket);
-      return url.toString();
-    },
     async broadcastBounds(bounds: Bounds): Promise<void> {
-      if (!sender) return;
+      latestBounds = bounds;
       try {
         await sender.broadcast_presence(
           bounds.reMin,
@@ -133,53 +253,6 @@ export async function initPresence(): Promise<PresenceManager> {
       }
     },
   };
-}
-
-function updateUrlWithTicket(session: import("presence-wasm").Session): void {
-  const ticket = session.ticket({
-    includeMyself: true,
-    includeBootstrap: false,
-    includeNeighbors: false,
-  });
-  const url = new URL(window.location.href);
-  url.searchParams.set(TICKET_PARAM, ticket);
-  window.history.replaceState({}, "", url.toString());
-}
-
-async function waitForJoin(
-  session: import("presence-wasm").Session,
-  timeoutMs: number,
-): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (session.neighbors().length > 0) return true;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return session.neighbors().length > 0;
-}
-
-function listenForEvents(
-  session: import("presence-wasm").Session,
-  peers: Map<string, PeerPresence>,
-  myEndpointId: string,
-  notify: () => void,
-): void {
-  const receiver = session.receiver;
-  const reader = receiver.getReader();
-
-  const pump = async () => {
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        handleEvent(value, peers, myEndpointId, notify);
-      }
-    } catch (err) {
-      console.warn("event stream ended:", err);
-    }
-  };
-  pump();
 }
 
 function handleEvent(
@@ -213,9 +286,12 @@ function handleEvent(
       notify();
       break;
     }
+    case "neighborUp":
+    case "joined":
     case "neighborDown": {
-      const id = event.endpointId as string;
-      peers.delete(id);
+      if (type === "neighborDown") {
+        peers.delete(event.endpointId as string);
+      }
       notify();
       break;
     }

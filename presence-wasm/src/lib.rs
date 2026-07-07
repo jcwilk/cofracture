@@ -6,7 +6,6 @@ use std::{
 use anyhow::Result;
 use presence_shared::{EndpointId, PresenceSender, PresenceTicket, TopicId};
 use n0_future::StreamExt;
-use serde::{Deserialize, Serialize};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::{prelude::wasm_bindgen, JsError, JsValue};
@@ -39,18 +38,39 @@ impl PresenceNode {
         self.0.endpoint_id().to_string()
     }
 
-    pub async fn create(&self) -> Result<Session, JsError> {
-        let ticket = PresenceTicket::new_random();
-        self.join_inner(ticket).await
+    pub async fn shutdown(&self) -> Result<(), JsError> {
+        self.0.shutdown().await;
+        Ok(())
+    }
+
+    pub async fn join_mesh(
+        &self,
+        mesh_id: String,
+        bootstrap_candidates: Vec<String>,
+    ) -> Result<Session, JsError> {
+        let candidates = parse_bootstrap_candidates(bootstrap_candidates)?;
+        let (sender, receiver) = self
+            .0
+            .join_mesh(&mesh_id, candidates)
+            .await
+            .map_err(to_js_err)?;
+        let topic_id = presence_shared::topic_id_from_mesh_id(&mesh_id);
+        self.session_from_join(topic_id, sender, receiver).await
     }
 
     pub async fn join(&self, ticket: String) -> Result<Session, JsError> {
         let ticket = PresenceTicket::deserialize(&ticket).map_err(to_js_err)?;
-        self.join_inner(ticket).await
+        let topic_id = ticket.topic_id;
+        let (sender, receiver) = self.0.join(&ticket).await.map_err(to_js_err)?;
+        self.session_from_join(topic_id, sender, receiver).await
     }
 
-    async fn join_inner(&self, ticket: PresenceTicket) -> Result<Session, JsError> {
-        let (sender, receiver) = self.0.join(&ticket).await.map_err(to_js_err)?;
+    async fn session_from_join(
+        &self,
+        topic_id: TopicId,
+        sender: PresenceSender,
+        receiver: n0_future::boxed::BoxStream<Result<presence_shared::Event>>,
+    ) -> Result<Session, JsError> {
         let sender = SessionSender(sender);
         let neighbors = Arc::new(Mutex::new(BTreeSet::new()));
         let neighbors2 = neighbors.clone();
@@ -75,14 +95,10 @@ impl PresenceNode {
         });
         let receiver = ReadableStream::from_stream(receiver).into_raw();
 
-        let mut ticket = ticket;
-        ticket.bootstrap.insert(self.0.endpoint_id());
-
         Ok(Session {
-            topic_id: ticket.topic_id,
-            bootstrap: ticket.bootstrap,
-            neighbors,
+            topic_id,
             me: self.0.endpoint_id(),
+            neighbors,
             sender,
             receiver,
         })
@@ -95,7 +111,6 @@ type SessionReceiver = wasm_streams::readable::sys::ReadableStream;
 pub struct Session {
     topic_id: TopicId,
     me: EndpointId,
-    bootstrap: BTreeSet<EndpointId>,
     neighbors: Arc<Mutex<BTreeSet<EndpointId>>>,
     sender: SessionSender,
     receiver: SessionReceiver,
@@ -113,22 +128,6 @@ impl Session {
         self.receiver.clone()
     }
 
-    pub fn ticket(&self, opts: JsValue) -> Result<String, JsError> {
-        let opts: TicketOpts = serde_wasm_bindgen::from_value(opts)?;
-        let mut ticket = PresenceTicket::new(self.topic_id);
-        if opts.include_myself {
-            ticket.bootstrap.insert(self.me);
-        }
-        if opts.include_bootstrap {
-            ticket.bootstrap.extend(self.bootstrap.iter().copied());
-        }
-        if opts.include_neighbors {
-            let neighbors = self.neighbors.lock().unwrap();
-            ticket.bootstrap.extend(neighbors.iter().copied());
-        }
-        Ok(ticket.serialize())
-    }
-
     pub fn id(&self) -> String {
         self.topic_id.to_string()
     }
@@ -141,14 +140,6 @@ impl Session {
             .map(|x| x.to_string())
             .collect()
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TicketOpts {
-    pub include_myself: bool,
-    pub include_bootstrap: bool,
-    pub include_neighbors: bool,
 }
 
 #[wasm_bindgen]
@@ -177,6 +168,16 @@ impl SessionSender {
             .map_err(to_js_err)?;
         Ok(())
     }
+}
+
+fn parse_bootstrap_candidates(candidates: Vec<String>) -> Result<Vec<EndpointId>, JsError> {
+    candidates
+        .into_iter()
+        .map(|id| {
+            id.parse::<EndpointId>()
+                .map_err(|err| JsError::new(&format!("invalid bootstrap endpoint id {id:?}: {err}")))
+        })
+        .collect()
 }
 
 fn to_js_err(err: impl Into<anyhow::Error>) -> JsError {
