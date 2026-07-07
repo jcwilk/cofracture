@@ -1,11 +1,14 @@
 import type { Instance, Torrent } from "webtorrent";
 
 export const SWARM_NAME = "cofracture-presence-discovery-v1";
+/** Fixed info hash for the constant swarm payload (same for all peers). */
+export const SWARM_INFO_HASH = "ed24faafb82acb6a9f8b13dca7ad6af6dd00bc7c";
 export const LISTEN_WINDOW_MS = 10_000;
 export const ADVERTISE_BASE_MS = 2_000;
 export const VALIDITY_WINDOW_MS = 45_000;
 export const BACKOFF_K0 = 5;
 export const SEQ_STORAGE_KEY = "cofracture-mesh-discovery-seq";
+const MESH_AD_EXT = "cofracture_mesh_ad";
 
 export interface MeshAdvertisement {
   endpoint_id: string;
@@ -34,6 +37,15 @@ export interface MeshListenResult {
   mesh: MeshState | null;
   bootstrapEndpointIds: string[];
 }
+
+type WireLike = {
+  use: (ctor: new (wire: WireLike) => {
+    onExtendedHandshake(): void;
+    onMessage(buf: Uint8Array): void;
+  }) => void;
+  extended: (ext: string | number, payload: Uint8Array) => void;
+  peerExtendedMapping: Record<string, number>;
+};
 
 function isValidAdvertisement(value: unknown): value is MeshAdvertisement {
   if (!value || typeof value !== "object") return false;
@@ -204,6 +216,51 @@ export function formNewMesh(): MeshState {
   };
 }
 
+function fixedSwarmPayload(): Uint8Array {
+  return new TextEncoder().encode(SWARM_NAME);
+}
+
+type TorrentRuntime = Torrent & {
+  destroyed?: boolean;
+  wires?: WireLike[];
+};
+
+type ClientRuntime = WebTorrentClient & {
+  destroyed?: boolean;
+};
+
+function createMeshAdExtension(
+  onAdvertisement: (payload: Uint8Array) => void,
+  getPayload: () => Uint8Array,
+): new (wire: WireLike) => {
+  onExtendedHandshake(): void;
+  onMessage(buf: Uint8Array): void;
+} {
+  class MeshAdWireExtensionImpl {
+    constructor(private readonly wire: WireLike) {}
+
+    onExtendedHandshake(): void {
+      this.sendLatest();
+    }
+
+    onMessage(buf: Uint8Array): void {
+      onAdvertisement(buf);
+    }
+
+    sendLatest(): void {
+      if (!this.wire.peerExtendedMapping[MESH_AD_EXT]) return;
+      try {
+        this.wire.extended(MESH_AD_EXT, getPayload());
+      } catch {
+        // peer disconnected
+      }
+    }
+  }
+  (MeshAdWireExtensionImpl as unknown as { prototype: { name: string } }).prototype.name =
+    MESH_AD_EXT;
+  return MeshAdWireExtensionImpl;
+}
+
 type WebTorrentClient = Instance;
 
 async function loadWebTorrent(): Promise<new () => WebTorrentClient> {
@@ -213,12 +270,21 @@ async function loadWebTorrent(): Promise<new () => WebTorrentClient> {
 
 export class MeshDiscovery {
   private client: WebTorrentClient | null = null;
-  private seedTorrent: Torrent | null = null;
+  private swarmTorrent: TorrentRuntime | null = null;
+  private swarmTorrentPromise: Promise<TorrentRuntime> | null = null;
   private readonly lastSeqByEndpoint = new Map<string, number>();
   private readonly meshes = new Map<string, MeshCandidate>();
   private advertiseTimer: number | null = null;
   private mergeCallback: ((older: MeshCandidate) => void) | null = null;
   private stopped = false;
+  private publishInFlight = false;
+  private latestAdPayload = encodeAdvertisement({
+    endpoint_id: "",
+    mesh_id: "",
+    mesh_formed_at: 0,
+    seq: 0,
+  });
+  private wireHandlerAttached = false;
 
   constructor(
     private readonly endpointId: string,
@@ -238,7 +304,7 @@ export class MeshDiscovery {
   }
 
   async listen(windowMs = LISTEN_WINDOW_MS): Promise<MeshListenResult> {
-    await this.ensureClient();
+    await this.ensureSwarmTorrent();
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, windowMs);
     });
@@ -264,7 +330,7 @@ export class MeshDiscovery {
 
   async startAdvertising(): Promise<void> {
     this.stopped = false;
-    await this.ensureClient();
+    await this.ensureSwarmTorrent();
     await this.publishOnce();
     this.scheduleNextAdvertise();
   }
@@ -275,14 +341,12 @@ export class MeshDiscovery {
       clearTimeout(this.advertiseTimer);
       this.advertiseTimer = null;
     }
-    if (this.seedTorrent) {
-      this.seedTorrent.destroy();
-      this.seedTorrent = null;
-    }
-    if (this.client) {
+    this.swarmTorrentPromise = null;
+    this.swarmTorrent = null;
+    if (this.client && !(this.client as ClientRuntime).destroyed) {
       this.client.destroy();
-      this.client = null;
     }
+    this.client = null;
   }
 
   bootstrapForMesh(meshId: string): string[] {
@@ -291,43 +355,91 @@ export class MeshDiscovery {
     return bootstrapEndpointIdsForMesh(mesh, this.endpointId, Date.now());
   }
 
-  private async ensureClient(): Promise<void> {
-    if (this.client) return;
-    const WebTorrent = await loadWebTorrent();
-    const client = new WebTorrent();
-    client.on("torrent", (torrent) => {
-      void this.handleTorrent(torrent);
-    });
-    this.client = client;
+  private ingestAdvertisement(bytes: Uint8Array): void {
+    const ad = parseAdvertisement(bytes);
+    if (!ad || ad.endpoint_id === this.endpointId) return;
+
+    const now = Date.now();
+    const accepted = recordAdvertisement(ad, this.lastSeqByEndpoint, this.meshes, now);
+    if (accepted) {
+      this.maybeTriggerMerge(ad.mesh_id, now);
+    }
   }
 
-  private async handleTorrent(torrent: Torrent): Promise<void> {
-    if (torrent.name !== SWARM_NAME) return;
-    const file = torrent.files[0];
-    if (!file) return;
+  private async ensureClient(): Promise<WebTorrentClient> {
+    const client = this.client as ClientRuntime | null;
+    if (client && !client.destroyed) return this.client!;
+    const WebTorrent = await loadWebTorrent();
+    this.client = new WebTorrent();
+    return this.client;
+  }
 
-    await new Promise<void>((resolve) => {
-      file.getBuffer((err, buffer) => {
-        if (err) {
-          resolve();
-          return;
-        }
-        const bytes =
-          buffer instanceof Uint8Array
-            ? buffer
-            : new Uint8Array(buffer as unknown as ArrayBuffer);
-        const ad = parseAdvertisement(bytes);
-        if (!ad) {
-          resolve();
-          return;
-        }
+  private attachWireHandler(torrent: TorrentRuntime): void {
+    if (this.wireHandlerAttached) return;
+    this.wireHandlerAttached = true;
 
-        const now = Date.now();
-        const accepted = recordAdvertisement(ad, this.lastSeqByEndpoint, this.meshes, now);
-        if (accepted) {
-          this.maybeTriggerMerge(ad.mesh_id, now);
-        }
-        resolve();
+    (torrent as TorrentRuntime & {
+      on(event: "wire", callback: (wire: WireLike) => void): void;
+    }).on("wire", (wire: WireLike) => {
+      wire.use(
+        createMeshAdExtension(
+          (payload) => this.ingestAdvertisement(payload),
+          () => this.latestAdPayload,
+        ),
+      );
+    });
+  }
+
+  private async ensureSwarmTorrent(): Promise<TorrentRuntime> {
+    if (this.stopped) {
+      throw new Error("mesh discovery stopped");
+    }
+    if (this.swarmTorrent && !this.swarmTorrent.destroyed) {
+      return this.swarmTorrent;
+    }
+    if (this.swarmTorrentPromise) {
+      return this.swarmTorrentPromise;
+    }
+
+    this.swarmTorrentPromise = this.createSwarmTorrent();
+    try {
+      this.swarmTorrent = await this.swarmTorrentPromise;
+      return this.swarmTorrent;
+    } finally {
+      this.swarmTorrentPromise = null;
+    }
+  }
+
+  private async createSwarmTorrent(): Promise<TorrentRuntime> {
+    const client = await this.ensureClient();
+    const infoHash = SWARM_INFO_HASH;
+    const existing = client.torrents.find(
+      (torrent) => !(torrent as TorrentRuntime).destroyed && torrent.infoHash === infoHash,
+    ) as TorrentRuntime | undefined;
+    if (existing) {
+      this.attachWireHandler(existing);
+      return existing;
+    }
+
+    return new Promise<TorrentRuntime>((resolve, reject) => {
+      const payload = new File([SWARM_NAME], SWARM_NAME, {
+        type: "application/octet-stream",
+      });
+      const torrent = (client as WebTorrentClient & {
+        seed: (
+          input: File,
+          opts: { name: string },
+          cb: (torrent: Torrent) => void,
+        ) => Torrent;
+      }).seed(payload, { name: SWARM_NAME }, (seeded) => {
+        if (this.stopped) return;
+        const runtime = seeded as TorrentRuntime;
+        this.attachWireHandler(runtime);
+        resolve(runtime);
+      }) as TorrentRuntime;
+
+      torrent.once("error", (err: Error) => {
+        if (!this.stopped) reject(err);
       });
     });
   }
@@ -353,39 +465,45 @@ export class MeshDiscovery {
     }, interval);
   }
 
-  private async publishOnce(): Promise<void> {
-    if (!this.client || this.stopped) return;
+  private broadcastToPeers(): void {
+    const torrent = this.swarmTorrent;
+    if (!torrent || torrent.destroyed) return;
 
-    const ad: MeshAdvertisement = {
-      endpoint_id: this.endpointId,
-      mesh_id: this.mesh.meshId,
-      mesh_formed_at: this.mesh.meshFormedAt,
-      seq: nextSeq(),
-    };
-
-    const now = Date.now();
-    recordAdvertisement(ad, this.lastSeqByEndpoint, this.meshes, now);
-
-    if (this.seedTorrent) {
-      this.seedTorrent.destroy();
-      this.seedTorrent = null;
+    for (const wire of torrent.wires ?? []) {
+      if (!wire.peerExtendedMapping?.[MESH_AD_EXT]) continue;
+      try {
+        wire.extended(MESH_AD_EXT, this.latestAdPayload);
+      } catch {
+        // peer gone
+      }
     }
+  }
 
-    const payload = new File([JSON.stringify(ad)], SWARM_NAME, {
-      type: "application/json",
-    });
+  private async publishOnce(): Promise<void> {
+    if (this.stopped || this.publishInFlight) return;
+    const client = this.client as ClientRuntime | null;
+    if (!client || client.destroyed) return;
 
-    await new Promise<void>((resolve) => {
-      const seed = this.client!.seed as unknown as (
-        input: File,
-        opts: { name: string },
-        cb: (torrent: Torrent) => void,
-      ) => Torrent;
-      seed(payload, { name: SWARM_NAME }, (torrent) => {
-        this.seedTorrent = torrent;
-        resolve();
-      });
-    });
+    this.publishInFlight = true;
+    try {
+      const ad: MeshAdvertisement = {
+        endpoint_id: this.endpointId,
+        mesh_id: this.mesh.meshId,
+        mesh_formed_at: this.mesh.meshFormedAt,
+        seq: nextSeq(),
+      };
+
+      const now = Date.now();
+      recordAdvertisement(ad, this.lastSeqByEndpoint, this.meshes, now);
+      this.latestAdPayload = encodeAdvertisement(ad);
+
+      await this.ensureSwarmTorrent();
+      this.broadcastToPeers();
+    } catch (err) {
+      console.warn("mesh discovery publish failed:", err);
+    } finally {
+      this.publishInFlight = false;
+    }
   }
 }
 

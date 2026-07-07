@@ -373,12 +373,18 @@ pub struct ReceivedMessage {
     message: Message,
 }
 
+/// Only the lexicographically smaller endpoint initiates outbound bootstrap dials.
+/// This avoids both peers dialing each other at once and aborting one handshake.
+fn should_initiate_bootstrap_dial(my_id: EndpointId, peer_id: EndpointId) -> bool {
+    my_id < peer_id
+}
+
 async fn dial_bootstrap_peers(
     endpoint: &iroh::Endpoint,
     mut candidates: Vec<EndpointId>,
 ) -> Vec<EndpointId> {
     let my_id = endpoint.id();
-    candidates.retain(|id| *id != my_id);
+    candidates.retain(|id| *id != my_id && should_initiate_bootstrap_dial(my_id, *id));
 
     while !candidates.is_empty() {
         let batch_size = candidates.len().min(MAX_CONCURRENT_BOOTSTRAP_DIALS);
