@@ -75,6 +75,12 @@ vec4 zoomInBackground(vec2 uv, float sx, float sy) {
   return vec4(bg.rgb, bg.a * (1.0 - u_progress));
 }
 
+vec4 zoomOutParent(float sx, float sy) {
+  if (inRect(sx, sy, u_pickupTileRect)) return vec4(0.0);
+  vec4 parent = sampleBounds(u_boundsTo);
+  return vec4(parent.rgb, parent.a * u_progress);
+}
+
 void main() {
   float screenX = v_uv.x * u_resolution.x;
   float screenY = (1.0 - v_uv.y) * u_resolution.y;
@@ -95,8 +101,7 @@ void main() {
       if (u_zoomIn > 0.5) {
         gl_FragColor = zoomInBackground(v_uv, screenX, screenY);
       } else {
-        vec4 parent = sampleBounds(u_boundsTo);
-        gl_FragColor = vec4(parent.rgb, parent.a * u_progress);
+        gl_FragColor = zoomOutParent(screenX, screenY);
       }
     } else {
       gl_FragColor = tileColor;
@@ -104,8 +109,7 @@ void main() {
   } else if (u_zoomIn > 0.5) {
     gl_FragColor = zoomInBackground(v_uv, screenX, screenY);
   } else {
-    vec4 parent = sampleBounds(u_boundsTo);
-    gl_FragColor = vec4(parent.rgb, parent.a * u_progress);
+    gl_FragColor = zoomOutParent(screenX, screenY);
   }
 }
 `;

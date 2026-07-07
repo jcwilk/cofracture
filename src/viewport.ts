@@ -209,9 +209,7 @@ export class Viewport {
       const eased = easeInCubic(rawT);
       const tileT = this.animZoomIn ? eased : 1 - eased;
       const tile = this.tileRectForZoom(layout.size, tileT);
-      const pickupTile = this.animZoomIn
-        ? this.tileRectForZoom(layout.size, 0)
-        : { x: 0, y: 0, w: 0, h: 0 };
+      const pickupTile = this.tileRectForZoom(layout.size, 0);
       this.onZoomAnimation?.(true, this.animZoomIn, eased);
       const frame = renderZoomFractal(
         layout.size,
