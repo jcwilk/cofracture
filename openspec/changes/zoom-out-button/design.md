@@ -4,6 +4,8 @@ The Mandelbrot explorer letterboxes a square render region inside the full viewp
 
 The canvas is full-screen; UI chrome was previously removed (no share/status bar). The zoom-out control will be a small DOM button overlaid on the page, positioned from layout math on resize and after zoom animations.
 
+The viewport currently fills letterbox margins with flat `#111` and draws the 8×8 grid as semi-opaque white strokes on top of the fractal, which reads as gray lines. The starfield sits behind the fractal layer so margins and inter-tile gaps show stars instead of flat fill.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -11,12 +13,14 @@ The canvas is full-screen; UI chrome was previously removed (no share/status bar
 - One tap/click zooms out exactly one level with a transition consistent with zoom-in (linear, ~250 ms).
 - Control is visible and reachable on mobile and desktop without blocking tile selection at the grid’s upper-left cell.
 - Placement respects letterboxing: sits in the margin beside the render square when portrait or landscape; falls back to viewport corner when aspect ratio is nearly square.
+- A subtle, low-contrast starfield fills the viewport behind the fractal; tile boundaries are narrow gaps that reveal the starfield rather than painted gray rules.
 
 **Non-Goals:**
 
 - Breadcrumb UI, depth indicator, or arbitrary jump in the zoom stack
 - Pinch-to-zoom or keyboard bindings
 - Zoom-out while a zoom-in animation is in progress
+- Parallax constellations, nebula art, or user themes
 
 ## Decisions
 
@@ -62,6 +66,28 @@ Use a `<button>` in `#app` (sibling to canvas) with fixed/absolute positioning u
 
 Compact control: “−” or magnifying-glass-minus glyph with `aria-label="Zoom out"`. No text label required on narrow screens; minimum touch target ~44×44 CSS px.
 
+### Decision: Starfield background layer
+
+Render a **full-viewport starfield** behind the fractal canvas. Stars are sparse, small, and low-contrast (white/blue-gray at low alpha) with very slow optional drift so the field feels alive without distracting from the set.
+
+**Layering (back to front):**
+
+1. Starfield (dedicated canvas or CSS pseudo-layer on `#app`, sized to viewport)
+2. Main fractal canvas (letterbox margins transparent or cleared each frame so stars show through)
+3. Zoom-out button (DOM, above canvas)
+
+**Alternatives considered:** Stars painted into WebGL fractal shader — couples rendering paths; rejected. Heavy particle systems — overkill for “subtle.”
+
+### Decision: Tile grid as gaps, not gray strokes
+
+Replace opaque grid line strokes with **narrow transparent gutters** between tile cells (e.g. 1 CSS px gap). Fractal pixels are drawn inset within each cell so the gutter shows the starfield layer beneath. Grid remains visually scannable but no longer reads as gray bars.
+
+During zoom-in animation, gutters follow the same cell layout where practical; brief mismatch acceptable if shader composite cannot gap mid-animation.
+
+**Alternative considered:** Keep strokes but sample starfield color under lines — harder and still looks like lines; rejected.
+
+Starfield also visible in **letterbox margins** (portrait top/bottom, landscape left/right) because the main canvas clears those regions instead of filling `#111`.
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
@@ -69,6 +95,8 @@ Compact control: “−” or magnifying-glass-minus glyph with `aria-label="Zoo
 | Button overlaps upper-left tile | Offset into letterbox margin; on near-square use small inset from corner |
 | Bounds lerp zoom-out looks different from zoom-in | Accept for v1; revisit reverse tile animation if reviewers care |
 | Stack desync if bounds change elsewhere | Only push on completed zoom-in; clear stack on full reset (future) |
+| Starfield hurts fractal contrast | Keep stars dim; limit count; no large flares |
+| Gap rendering costs perf | 1 px gutters; starfield is cheap static points with rare redraw |
 
 ## Migration Plan
 

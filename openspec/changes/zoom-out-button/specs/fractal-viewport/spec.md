@@ -31,3 +31,24 @@ The zoom-out control SHALL appear in the upper-left area of the viewport, positi
 - **GIVEN** the viewport aspect ratio is close to square with little or no letterbox margin
 - **WHEN** the zoom-out control is shown
 - **THEN** it appears in the upper-left corner of the viewport
+
+### Requirement: Subtle starfield fills the space behind the fractal view
+The application SHALL show a low-contrast starfield across the viewport behind the Mandelbrot render field, including letterbox margins, so the area around and between tiles feels like open space rather than flat gray fill.
+
+#### Scenario: Letterbox margins show the starfield
+- **GIVEN** the render square is inset with visible margins
+- **WHEN** a visitor views the explorer
+- **THEN** the margins show the starfield background instead of a solid flat field
+
+#### Scenario: Starfield remains visually subtle
+- **GIVEN** the fractal is rendered at normal exploration zoom levels
+- **WHEN** a visitor views the explorer
+- **THEN** the starfield is visible but does not materially obscure or compete with the Mandelbrot image
+
+### Requirement: Tile grid gaps reveal the starfield
+The 8×8 tile grid SHALL separate adjacent tiles with narrow gaps that show the starfield behind them rather than opaque gray grid lines drawn over the fractal.
+
+#### Scenario: Gaps between tiles show stars
+- **GIVEN** the tile grid is visible over the fractal
+- **WHEN** a visitor looks at the boundaries between neighboring tiles
+- **THEN** they see the starfield through the gap instead of a solid gray divider line
