@@ -1,10 +1,12 @@
 import {
   CANONICAL_BOUNDS,
   boundsEqual,
+  lerpBounds,
   peerHighlightIsViewOutline,
   tileBounds,
   type Bounds,
 } from "./bounds";
+import { ZOOM_DURATION_MS, easeInCubic } from "./easing";
 import {
   boundsToScreen,
   clearZoomBackground,
@@ -17,7 +19,6 @@ import {
 import type { PeerPresence } from "./presence";
 
 const GRID_SIZE = 8;
-const ZOOM_DURATION_MS = 250;
 const TILE_GAP = 1;
 const NEARLY_SQUARE_THRESHOLD = 0.08;
 const ZOOM_OUT_BUTTON_SIZE = 44;
@@ -56,8 +57,16 @@ export class Viewport {
   private onBoundsChanged: ((bounds: Bounds) => void) | null = null;
   private onZoomOutAvailabilityChanged: ((available: boolean) => void) | null = null;
   private onAnimationComplete: (() => void) | null = null;
+  private onZoomAnimation:
+    | ((active: boolean, zoomIn: boolean, easedT?: number) => void)
+    | null = null;
   private fractalCache: FractalRender | null = null;
   private layoutCache: SquareLayout | null = null;
+  private peerAnimFrom: Map<string, Bounds> = new Map();
+  private peerAnimStart: Map<string, number> = new Map();
+  private peerDisplayed: Map<string, Bounds> = new Map();
+  private peerTargets: Map<string, Bounds> = new Map();
+  private peerAnimLoopActive = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -78,6 +87,10 @@ export class Viewport {
     this.onAnimationComplete = cb;
   }
 
+  setOnZoomAnimation(cb: (active: boolean, zoomIn: boolean, easedT?: number) => void): void {
+    this.onZoomAnimation = cb;
+  }
+
   getBounds(): Bounds {
     return { ...this.bounds };
   }
@@ -87,8 +100,35 @@ export class Viewport {
   }
 
   setPeers(peers: Map<string, PeerPresence>): void {
+    const now = performance.now();
     this.peers = peers;
-    this.draw();
+
+    for (const [id, peer] of peers) {
+      const prevTarget = this.peerTargets.get(id);
+      if (prevTarget === undefined) {
+        this.peerDisplayed.set(id, { ...peer.bounds });
+        this.peerAnimFrom.delete(id);
+        this.peerAnimStart.delete(id);
+      } else if (!boundsEqual(prevTarget, peer.bounds)) {
+        const from = this.peerAnimStart.has(id)
+          ? this.interpolatePeerBounds(id, now)
+          : (this.peerDisplayed.get(id) ?? peer.bounds);
+        this.peerAnimFrom.set(id, { ...from });
+        this.peerAnimStart.set(id, now);
+      }
+      this.peerTargets.set(id, { ...peer.bounds });
+    }
+
+    for (const id of this.peerTargets.keys()) {
+      if (!peers.has(id)) {
+        this.peerTargets.delete(id);
+        this.peerAnimFrom.delete(id);
+        this.peerAnimStart.delete(id);
+        this.peerDisplayed.delete(id);
+      }
+    }
+
+    this.schedulePeerAnimation();
   }
 
   resize(): void {
@@ -101,6 +141,7 @@ export class Viewport {
     this.canvas.style.height = `${h}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.layoutCache = null;
+    clearZoomBackground();
     this.invalidateFractalCache();
     this.draw();
   }
@@ -164,16 +205,18 @@ export class Viewport {
     this.ctx.translate(layout.x, layout.y);
 
     if (this.animating) {
-      const t = Math.min(1, (performance.now() - this.animStart) / ZOOM_DURATION_MS);
-      const tileT = this.animZoomIn ? t : 1 - t;
+      const rawT = Math.min(1, (performance.now() - this.animStart) / ZOOM_DURATION_MS);
+      const eased = easeInCubic(rawT);
+      const tileT = this.animZoomIn ? eased : 1 - eased;
       const tile = this.tileRectForZoom(layout.size, tileT);
+      this.onZoomAnimation?.(true, this.animZoomIn, eased);
       const frame = renderZoomFractal(
         layout.size,
         layout.size,
         this.animFrom,
         this.animTo,
         tile,
-        t,
+        eased,
         this.animZoomIn,
       );
       this.ctx.drawImage(frame, 0, 0, layout.size, layout.size);
@@ -221,12 +264,66 @@ export class Viewport {
     this.fractalCache = null;
   }
 
+  private interpolatePeerBounds(id: string, now: number): Bounds {
+    const from = this.peerAnimFrom.get(id);
+    const start = this.peerAnimStart.get(id);
+    const target = this.peers.get(id)?.bounds;
+    if (!from || start === undefined || !target) {
+      return target ?? from ?? { ...CANONICAL_BOUNDS };
+    }
+
+    const rawT = Math.min(1, (now - start) / ZOOM_DURATION_MS);
+    const t = easeInCubic(rawT);
+    if (rawT >= 1) {
+      this.peerAnimFrom.delete(id);
+      this.peerAnimStart.delete(id);
+      this.peerDisplayed.set(id, { ...target });
+      return target;
+    }
+    return lerpBounds(from, target, t);
+  }
+
+  private hasActivePeerAnimations(now = performance.now()): boolean {
+    for (const [id, start] of this.peerAnimStart) {
+      if (!this.peers.has(id)) continue;
+      if ((now - start) / ZOOM_DURATION_MS < 1) return true;
+    }
+    return false;
+  }
+
+  private schedulePeerAnimation(): void {
+    if (this.peerAnimLoopActive) return;
+    if (!this.hasActivePeerAnimations()) {
+      if (!this.animating) this.draw();
+      return;
+    }
+    this.peerAnimLoopActive = true;
+    const loop = (): void => {
+      if (!this.animating) this.draw();
+      if (!this.hasActivePeerAnimations()) {
+        this.peerAnimLoopActive = false;
+        return;
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+
   private drawPeerHighlights(layout: SquareLayout, viewBounds: Bounds): void {
-    for (const peer of this.peers.values()) {
-      const outlineOnly = peerHighlightIsViewOutline(peer.bounds, viewBounds);
+    const now = performance.now();
+    for (const [id, peer] of this.peers) {
+      const bounds = this.peerAnimStart.has(id)
+        ? this.interpolatePeerBounds(id, now)
+        : (this.peerDisplayed.get(id) ?? peer.bounds);
+
+      if (!this.peerAnimStart.has(id)) {
+        this.peerDisplayed.set(id, { ...bounds });
+      }
+
+      const outlineOnly = peerHighlightIsViewOutline(bounds, viewBounds);
       const rect = outlineOnly
         ? { x: 0, y: 0, w: layout.size, h: layout.size }
-        : boundsToScreen(peer.bounds, viewBounds, 0, 0, layout.size);
+        : boundsToScreen(bounds, viewBounds, 0, 0, layout.size);
 
       this.ctx.strokeStyle = peer.color;
       this.ctx.lineWidth = 3;
@@ -262,6 +359,7 @@ export class Viewport {
     prepareZoomBackground(layout.size, layout.size, this.animFrom);
     this.animStart = performance.now();
     this.animating = true;
+    this.onZoomAnimation?.(true, true);
     this.animate();
   }
 
@@ -279,6 +377,7 @@ export class Viewport {
     clearZoomBackground();
     this.animStart = performance.now();
     this.animating = true;
+    this.onZoomAnimation?.(true, false);
     this.animate();
   }
 
@@ -303,6 +402,7 @@ export class Viewport {
       }
       this.bounds = { ...this.animTo };
       this.animating = false;
+      this.onZoomAnimation?.(false, this.animZoomIn);
       clearZoomBackground();
       this.invalidateFractalCache();
       this.draw();

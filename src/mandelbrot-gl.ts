@@ -181,16 +181,14 @@ export class MandelbrotGlRenderer {
   }
 
   private ensureGl(width: number, height: number): WebGLRenderingContext {
-    const needW = Math.max(width, this.glWidth);
-    const needH = Math.max(height, this.glHeight);
-    if (this.gl && needW === this.glWidth && needH === this.glHeight) {
+    if (this.gl && width === this.glWidth && height === this.glHeight) {
       return this.gl;
     }
 
-    this.glWidth = needW;
-    this.glHeight = needH;
-    this.glCanvas.width = needW;
-    this.glCanvas.height = needH;
+    this.glWidth = width;
+    this.glHeight = height;
+    this.glCanvas.width = width;
+    this.glCanvas.height = height;
     this.backgroundReady = false;
 
     const gl =

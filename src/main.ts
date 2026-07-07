@@ -45,6 +45,12 @@ async function main(): Promise<void> {
   app.appendChild(canvas);
 
   const viewport = new Viewport(canvas);
+  viewport.setOnZoomAnimation((active, zoomIn, easedT) => {
+    starfield.setZoomAnimation(active, zoomIn);
+    if (active && easedT !== undefined) {
+      starfield.notifyZoomEasedProgress(easedT);
+    }
+  });
   createZoomOutButton(app, viewport);
   viewport.resize();
   viewport.bindInput();
