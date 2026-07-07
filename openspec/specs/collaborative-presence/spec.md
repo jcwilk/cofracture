@@ -37,23 +37,19 @@ The application SHALL support multiple participants exploring at the same time w
 - **WHEN** three or more participants are connected and each has a distinct tile focus
 - **THEN** each participant can distinguish highlights for every other participant on their own screen
 
-### Requirement: Participants join a session via shareable link
-The application SHALL let visitors join the same collaborative session by opening or sharing a URL that encodes session join information, without creating an account.
-
-#### Scenario: Second visitor joins an active session
-- **WHEN** a visitor opens a shareable session link while another participant is already connected
-- **THEN** the visitor joins the same session
-- **AND** both participants can see each other's tile highlights once connected
-
-#### Scenario: Host can share a session link
-- **WHEN** a visitor starts a new collaborative session
-- **THEN** they can obtain a shareable URL that allows others to join the same session
-
 ### Requirement: Solo exploration continues when presence is unavailable
 When peer connectivity cannot be established or is lost, the application SHALL continue local Mandelbrot exploration without blocking navigation.
 
 #### Scenario: Unreachable session falls back to solo mode
-- **WHEN** a visitor cannot join or maintain a collaborative session
+- **WHEN** a visitor cannot discover a live mesh, bootstrap into gossip, or maintain a collaborative connection
 - **THEN** they can still explore the fractal locally
 - **AND** peer highlights are not shown until connectivity succeeds
+
+### Requirement: Participants join from a single public site URL
+The application SHALL allow any visitor to join collaborative presence by opening the same published site URL as everyone else, without requiring a per-session link or encoded join ticket in the address.
+
+#### Scenario: Second visitor joins without a special URL
+- **WHEN** a visitor opens the standard published site URL while another participant is already connected to a live mesh
+- **THEN** the visitor automatically attempts discovery and join
+- **AND** both participants can see each other's tile highlights once connected
 
