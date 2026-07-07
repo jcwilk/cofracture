@@ -28,7 +28,7 @@ vec4 colorAt(vec2 c) {
     z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
     iter = float(i + 1);
   }
-  if (iter >= ${MAX_ITER}.0) return vec4(0.0, 0.0, 0.0, 1.0);
+  if (iter >= ${MAX_ITER}.0) return vec4(0.0, 0.0, 0.0, 0.0);
   return vec4(palette(iter / ${MAX_ITER}.0), 1.0);
 }
 `;
@@ -52,6 +52,7 @@ varying vec2 v_uv;
 uniform vec4 u_boundsFrom;
 uniform vec4 u_boundsTo;
 uniform vec4 u_tileRect;
+uniform vec4 u_pickupTileRect;
 uniform vec2 u_resolution;
 uniform sampler2D u_background;
 uniform float u_progress;
@@ -62,6 +63,16 @@ vec4 sampleBounds(vec4 b) {
   float re = b.x + v_uv.x * (b.y - b.x);
   float im = b.w - (1.0 - v_uv.y) * (b.w - b.z);
   return colorAt(vec2(re, im));
+}
+
+bool inRect(float sx, float sy, vec4 r) {
+  return sx >= r.x && sx < r.x + r.z && sy >= r.y && sy < r.y + r.w;
+}
+
+vec4 zoomInBackground(vec2 uv, float sx, float sy) {
+  if (inRect(sx, sy, u_pickupTileRect)) return vec4(0.0);
+  vec4 bg = texture2D(u_background, uv);
+  return vec4(bg.rgb, bg.a * (1.0 - u_progress));
 }
 
 void main() {
@@ -79,10 +90,19 @@ void main() {
     vec4 b = u_zoomIn > 0.5 ? u_boundsTo : u_boundsFrom;
     float re = b.x + u * (b.y - b.x);
     float im = b.w - v * (b.w - b.z);
-    gl_FragColor = colorAt(vec2(re, im));
+    vec4 tileColor = colorAt(vec2(re, im));
+    if (tileColor.a < 0.5) {
+      if (u_zoomIn > 0.5) {
+        gl_FragColor = zoomInBackground(v_uv, screenX, screenY);
+      } else {
+        vec4 parent = sampleBounds(u_boundsTo);
+        gl_FragColor = vec4(parent.rgb, parent.a * u_progress);
+      }
+    } else {
+      gl_FragColor = tileColor;
+    }
   } else if (u_zoomIn > 0.5) {
-    vec4 bg = texture2D(u_background, v_uv);
-    gl_FragColor = vec4(bg.rgb, bg.a * (1.0 - u_progress));
+    gl_FragColor = zoomInBackground(v_uv, screenX, screenY);
   } else {
     vec4 parent = sampleBounds(u_boundsTo);
     gl_FragColor = vec4(parent.rgb, parent.a * u_progress);
@@ -110,6 +130,7 @@ interface ZoomUniforms {
   boundsFrom: WebGLUniformLocation;
   boundsTo: WebGLUniformLocation;
   tileRect: WebGLUniformLocation;
+  pickupTileRect: WebGLUniformLocation;
   resolution: WebGLUniformLocation;
   background: WebGLUniformLocation;
   progress: WebGLUniformLocation;
@@ -173,7 +194,8 @@ export class MandelbrotGlRenderer {
   static create(): MandelbrotGlRenderer {
     const glCanvas = document.createElement("canvas");
     const gl =
-      glCanvas.getContext("webgl") ?? glCanvas.getContext("experimental-webgl");
+      glCanvas.getContext("webgl", { alpha: true, premultipliedAlpha: false }) ??
+      glCanvas.getContext("experimental-webgl");
     if (!gl) {
       throw new Error("WebGL is required but unavailable in this browser");
     }
@@ -194,6 +216,7 @@ export class MandelbrotGlRenderer {
     const gl =
       this.glCanvas.getContext("webgl", {
         alpha: true,
+        premultipliedAlpha: false,
         antialias: false,
         depth: false,
         preserveDrawingBuffer: true,
@@ -214,6 +237,7 @@ export class MandelbrotGlRenderer {
     const boundsFrom = webgl.getUniformLocation(zoom.program, "u_boundsFrom");
     const boundsTo = webgl.getUniformLocation(zoom.program, "u_boundsTo");
     const tileRect = webgl.getUniformLocation(zoom.program, "u_tileRect");
+    const pickupTileRect = webgl.getUniformLocation(zoom.program, "u_pickupTileRect");
     const resolution = webgl.getUniformLocation(zoom.program, "u_resolution");
     const background = webgl.getUniformLocation(zoom.program, "u_background");
     const progress = webgl.getUniformLocation(zoom.program, "u_progress");
@@ -222,6 +246,7 @@ export class MandelbrotGlRenderer {
       boundsFrom === null ||
       boundsTo === null ||
       tileRect === null ||
+      pickupTileRect === null ||
       resolution === null ||
       background === null ||
       progress === null ||
@@ -243,7 +268,7 @@ export class MandelbrotGlRenderer {
     this.normal = { ...normal, uniforms: { bounds } };
     this.zoom = {
       ...zoom,
-      uniforms: { boundsFrom, boundsTo, tileRect, resolution, background, progress, zoomIn },
+      uniforms: { boundsFrom, boundsTo, tileRect, pickupTileRect, resolution, background, progress, zoomIn },
     };
     this.buffer = buffer;
     return webgl;
@@ -293,6 +318,8 @@ export class MandelbrotGlRenderer {
     const { program, posLoc, uniforms } = this.normal!;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb);
     gl.viewport(0, 0, width, height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(program);
     gl.uniform4f(
       uniforms.bounds,
@@ -331,6 +358,7 @@ export class MandelbrotGlRenderer {
     boundsFrom: Bounds,
     boundsTo: Bounds,
     tile: TileRect,
+    pickupTile: TileRect,
     progress: number,
     zoomIn: boolean,
   ): HTMLCanvasElement {
@@ -361,6 +389,7 @@ export class MandelbrotGlRenderer {
       boundsTo.imMax,
     );
     gl.uniform4f(uniforms.tileRect, tile.x, tile.y, tile.w, tile.h);
+    gl.uniform4f(uniforms.pickupTileRect, pickupTile.x, pickupTile.y, pickupTile.w, pickupTile.h);
     gl.uniform2f(uniforms.resolution, width, height);
     gl.uniform1f(uniforms.progress, progress);
     gl.uniform1f(uniforms.zoomIn, zoomIn ? 1 : 0);

@@ -36,7 +36,9 @@ function retainCanvas(
     cacheCanvas.width = width;
     cacheCanvas.height = height;
   }
-  cacheCanvas.getContext("2d")!.drawImage(source, 0, 0, width, height);
+  const ctx = cacheCanvas.getContext("2d")!;
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(source, 0, 0, width, height);
   return cacheCanvas;
 }
 
@@ -71,6 +73,7 @@ export function renderZoomFractal(
   boundsFrom: Bounds,
   boundsTo: Bounds,
   tile: TileRect,
+  pickupTile: TileRect,
   progress: number,
   zoomIn: boolean,
 ): HTMLCanvasElement {
@@ -80,6 +83,7 @@ export function renderZoomFractal(
     boundsFrom,
     boundsTo,
     tile,
+    pickupTile,
     progress,
     zoomIn,
   );
