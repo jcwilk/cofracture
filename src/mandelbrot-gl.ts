@@ -31,6 +31,92 @@ vec4 colorAt(vec2 c) {
   if (iter >= ${MAX_ITER}.0) return vec4(0.0, 0.0, 0.0, 0.0);
   return vec4(palette(iter / ${MAX_ITER}.0), 1.0);
 }
+
+// Nested glass faces: 8×8 macro × 8×8 nest = 64 micro-faces across the view (matches zoom partition).
+const float GLASS_N = 64.0;
+const float GLASS_GAP = 0.028;
+const float GLASS_SOFT = 0.03; // soft mortar AA band (partial transparency, no hard cliff)
+const float GLASS_CORNER = 0.26;
+const float GLASS_K = 0.28;
+const float GLASS_LENS = 0.85;
+
+vec2 glassLocal(vec2 uv) {
+  return fract(uv * GLASS_N) * 2.0 - 1.0;
+}
+
+// Rounded-rect SDF in local [-1,1]: mostly square, soft corners.
+float glassTileDist(vec2 p) {
+  vec2 q = abs(p) - (1.0 - GLASS_CORNER);
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - GLASS_CORNER;
+}
+
+// Soft coverage: partial alpha across the mortar edge (no opaque grid strokes).
+float glassCoverage(vec2 p) {
+  float d = glassTileDist(p);
+  return 1.0 - smoothstep(-GLASS_GAP - GLASS_SOFT, -GLASS_GAP + GLASS_SOFT, d);
+}
+
+// Light face warp — hint of dome, mostly flat tile.
+vec2 glassUv(vec2 uv, vec2 p) {
+  vec2 id = floor(uv * GLASS_N);
+  float r2 = dot(p, p);
+  vec2 ps = p * (1.0 + GLASS_K * r2) * GLASS_LENS;
+  return (id + clamp(ps * 0.5 + 0.5, 0.0, 1.0)) / GLASS_N;
+}
+
+// Specular-led glass: primary glossy L flush to upper-right edge + subtle opposite catch-light.
+vec4 glassShade(vec4 col, vec2 p) {
+  float d = glassTileDist(p);
+  float r = length(p);
+  float edge = smoothstep(-0.24, -0.02, d);
+
+  float dome = 1.0 - 0.10 * smoothstep(0.18, 0.92, r);
+  float rim = smoothstep(0.55, 0.96, r) * 0.07;
+
+  float bevel = p.x * 0.11 - p.y * 0.13;
+  float hi = max(0.0, -bevel) * (0.25 + 0.75 * edge);
+  float lo = max(0.0, bevel) * (0.2 + 0.8 * edge);
+
+  // Face rim sits near |p|≈0.97; keep the L flush to that edge (local +y is screen-up).
+  float topArm = pow(max(0.0, 1.0 - abs(p.y - 0.92) * 5.2), 3.6)
+               * smoothstep(-0.25, 0.45, p.x) * smoothstep(0.99, 0.62, p.x);
+  float rightArm = pow(max(0.0, 1.0 - abs(p.x - 0.92) * 5.2), 3.6)
+                 * smoothstep(-0.25, 0.45, p.y) * smoothstep(0.99, 0.62, p.y);
+  float corner = pow(max(0.0, 1.0 - length(p - vec2(0.88, 0.88)) * 2.6), 2.8);
+  float rimSpec = max(topArm, max(rightArm, corner * 0.9)) * (0.4 + 0.6 * edge);
+  float hot = pow(max(0.0, 1.0 - length(p - vec2(0.86, 0.90)) * 2.8), 6.0);
+  // Subtle opposite catch-light (lower-left), not a face wash
+  float catchLight = pow(max(0.0, 1.0 - length(p - vec2(-0.58, -0.58)) * 1.8), 8.0) * 0.16;
+
+  // Minimum substrate milkiness only on transparent fractal samples; thins toward the edge
+  float milkAmt = (1.0 - col.a) * (1.0 - 0.55 * edge);
+  float milkA = 0.07 * milkAmt;
+  vec3 milkRgb = vec3(0.86, 0.90, 0.98);
+
+  if (col.a < 0.5) {
+    float face = 0.008 * (1.0 - 0.5 * edge);
+    float a = max(milkA, face + hi * 0.08 + lo * 0.02 + rimSpec * 0.7 + hot * 0.55 + catchLight * 0.35);
+    vec3 rgb = mix(milkRgb, vec3(1.0), clamp(rimSpec * 0.7 + hot * 0.55 + catchLight * 0.35, 0.0, 1.0));
+    return vec4(rgb, clamp(a, 0.0, 0.68));
+  }
+
+  // Opaque fractal: no milkiness — only bevel / specular on the color
+  vec3 rgb = col.rgb * (dome - rim + hi * 0.3 - lo * 0.35)
+           + vec3(rimSpec * 0.4 + hot * 0.35 + catchLight * 0.2);
+  return vec4(rgb, 1.0);
+}
+
+vec4 colorAtGlass(vec4 b, vec2 uv) {
+  vec2 p = glassLocal(uv);
+  float cover = glassCoverage(p);
+  if (cover <= 0.001) return vec4(0.0);
+  vec2 u = glassUv(uv, p);
+  float re = b.x + u.x * (b.y - b.x);
+  float im = b.w - (1.0 - u.y) * (b.w - b.z);
+  vec4 shaded = glassShade(colorAt(vec2(re, im)), p);
+  shaded.a *= cover;
+  return shaded;
+}
 `;
 
 const FRAGMENT_SHADER = `
@@ -40,9 +126,7 @@ uniform vec4 u_bounds;
 ${MANDELBROT_GLSL}
 
 void main() {
-  float re = u_bounds.x + v_uv.x * (u_bounds.y - u_bounds.x);
-  float im = u_bounds.w - (1.0 - v_uv.y) * (u_bounds.w - u_bounds.z);
-  gl_FragColor = colorAt(vec2(re, im));
+  gl_FragColor = colorAtGlass(u_bounds, v_uv);
 }
 `;
 
@@ -60,9 +144,7 @@ uniform float u_zoomIn;
 ${MANDELBROT_GLSL}
 
 vec4 sampleBounds(vec4 b) {
-  float re = b.x + v_uv.x * (b.y - b.x);
-  float im = b.w - (1.0 - v_uv.y) * (b.w - b.z);
-  return colorAt(vec2(re, im));
+  return colorAtGlass(b, v_uv);
 }
 
 bool inRect(float sx, float sy, vec4 r) {
@@ -81,6 +163,12 @@ vec4 zoomOutParent(float sx, float sy) {
   return vec4(parent.rgb, parent.a * u_progress);
 }
 
+vec4 over(vec4 src, vec4 dst) {
+  float a = src.a + dst.a * (1.0 - src.a);
+  vec3 rgb = src.rgb * src.a + dst.rgb * (1.0 - src.a);
+  return vec4(rgb, a);
+}
+
 void main() {
   float screenX = v_uv.x * u_resolution.x;
   float screenY = (1.0 - v_uv.y) * u_resolution.y;
@@ -90,26 +178,17 @@ void main() {
   bool inTile = screenX >= tileL && screenX < tileL + u_tileRect.z &&
                 screenY >= tileT && screenY < tileT + u_tileRect.w;
 
+  vec4 under = u_zoomIn > 0.5
+    ? zoomInBackground(v_uv, screenX, screenY)
+    : zoomOutParent(screenX, screenY);
+
   if (inTile) {
     float u = (screenX - tileL) / u_tileRect.z;
-    float v = (screenY - tileT) / u_tileRect.w;
+    float v = 1.0 - (screenY - tileT) / u_tileRect.w;
     vec4 b = u_zoomIn > 0.5 ? u_boundsTo : u_boundsFrom;
-    float re = b.x + u * (b.y - b.x);
-    float im = b.w - v * (b.w - b.z);
-    vec4 tileColor = colorAt(vec2(re, im));
-    if (tileColor.a < 0.5) {
-      if (u_zoomIn > 0.5) {
-        gl_FragColor = zoomInBackground(v_uv, screenX, screenY);
-      } else {
-        gl_FragColor = zoomOutParent(screenX, screenY);
-      }
-    } else {
-      gl_FragColor = tileColor;
-    }
-  } else if (u_zoomIn > 0.5) {
-    gl_FragColor = zoomInBackground(v_uv, screenX, screenY);
+    gl_FragColor = over(colorAtGlass(b, vec2(u, v)), under);
   } else {
-    gl_FragColor = zoomOutParent(screenX, screenY);
+    gl_FragColor = under;
   }
 }
 `;

@@ -17,9 +17,10 @@ import {
   type FractalRender,
 } from "./mandelbrot";
 import type { PeerPresence } from "./presence";
+import { tileBaseJitter, tileWanderOffset } from "./tile-style";
 
 const GRID_SIZE = 8;
-const TILE_GAP = 1;
+const TILE_GAP = 3;
 const NEARLY_SQUARE_THRESHOLD = 0.08;
 const ZOOM_OUT_BUTTON_SIZE = 44;
 
@@ -67,12 +68,25 @@ export class Viewport {
   private peerDisplayed: Map<string, Bounds> = new Map();
   private peerTargets: Map<string, Bounds> = new Map();
   private peerAnimLoopActive = false;
+  /** Continuous idle redraw so macro-tile wander stays live. */
+  private idleLoopActive = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) throw new Error("2d context unavailable");
     this.ctx = ctx;
+    this.startIdleLoop();
+  }
+
+  private startIdleLoop(): void {
+    if (this.idleLoopActive) return;
+    this.idleLoopActive = true;
+    const loop = (): void => {
+      if (!this.animating) this.draw();
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
   }
 
   setOnBoundsChanged(cb: (bounds: Bounds) => void): void {
@@ -236,11 +250,14 @@ export class Viewport {
   private drawFractalWithGaps(fractal: FractalRender, viewBounds: Bounds, size: number): void {
     const cell = size / GRID_SIZE;
     const halfGap = TILE_GAP / 2;
+    const now = performance.now();
 
     for (let row = 0; row < GRID_SIZE; row++) {
       for (let col = 0; col < GRID_SIZE; col++) {
-        const destX = col * cell + halfGap;
-        const destY = row * cell + halfGap;
+        const jitter = tileBaseJitter(row, col);
+        const wander = tileWanderOffset(row, col, now);
+        const destX = col * cell + halfGap + jitter.x + wander.x;
+        const destY = row * cell + halfGap + jitter.y + wander.y;
         const destW = cell - TILE_GAP;
         const destH = cell - TILE_GAP;
         const tile = tileBounds(viewBounds, row, col, GRID_SIZE);
