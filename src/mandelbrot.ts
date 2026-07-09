@@ -76,6 +76,7 @@ export function renderZoomFractal(
   pickupTile: TileRect,
   progress: number,
   zoomIn: boolean,
+  macroOffsets: Float32Array,
 ): HTMLCanvasElement {
   return getGlRenderer().renderZoom(
     width,
@@ -86,6 +87,7 @@ export function renderZoomFractal(
     pickupTile,
     progress,
     zoomIn,
+    macroOffsets,
   );
 }
 

@@ -17,7 +17,7 @@ import {
   type FractalRender,
 } from "./mandelbrot";
 import type { PeerPresence } from "./presence";
-import { tileBaseJitter, tileWanderOffset } from "./tile-style";
+import { packMacroOffsets, tileMacroOffset } from "./tile-style";
 
 const GRID_SIZE = 8;
 const TILE_GAP = 3;
@@ -223,14 +223,13 @@ export class Viewport {
     this.ctx.translate(layout.x, layout.y);
 
     if (this.animating) {
-      const rawT = Math.min(1, (performance.now() - this.animStart) / ZOOM_DURATION_MS);
-      const eased = easeInCubic(rawT);
-      // Zoom-in: linear wall-clock progress; fly-apart easing (move/scale) lives in the shader.
-      // Zoom-out: cubic ease + existing single-tile reverse path (no fly-apart).
-      const progress = this.animZoomIn ? rawT : eased;
-      const tileT = this.animZoomIn ? progress : 1 - eased;
-      const tile = this.tileRectForZoom(layout.size, tileT);
+      const now = performance.now();
+      const rawT = Math.min(1, (now - this.animStart) / ZOOM_DURATION_MS);
+      // Linear wall-clock progress; fly-apart / fly-together easing lives in the shader.
+      const progress = rawT;
       const pickupTile = this.tileRectForZoom(layout.size, 0);
+      // Expanding rect kept for API compatibility; fly shaders key off pickup + progress.
+      const tile = this.tileRectForZoom(layout.size, this.animZoomIn ? progress : 1 - progress);
       this.onZoomAnimation?.(true, this.animZoomIn, progress);
       const frame = renderZoomFractal(
         layout.size,
@@ -241,6 +240,7 @@ export class Viewport {
         pickupTile,
         progress,
         this.animZoomIn,
+        packMacroOffsets(now),
       );
       this.ctx.drawImage(frame, 0, 0, layout.size, layout.size);
     } else {
@@ -261,10 +261,9 @@ export class Viewport {
 
     for (let row = 0; row < GRID_SIZE; row++) {
       for (let col = 0; col < GRID_SIZE; col++) {
-        const jitter = tileBaseJitter(row, col);
-        const wander = tileWanderOffset(row, col, now);
-        const destX = col * cell + halfGap + jitter.x + wander.x;
-        const destY = row * cell + halfGap + jitter.y + wander.y;
+        const off = tileMacroOffset(row, col, now);
+        const destX = col * cell + halfGap + off.x;
+        const destY = row * cell + halfGap + off.y;
         const destW = cell - TILE_GAP;
         const destH = cell - TILE_GAP;
         const tile = tileBounds(viewBounds, row, col, GRID_SIZE);

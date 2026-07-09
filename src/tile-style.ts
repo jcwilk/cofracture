@@ -23,3 +23,30 @@ export function tileWanderOffset(
     y: Math.cos(t * 0.27 + phase * 0.9) * 1.1 + Math.cos(t * 0.19 + phase * 1.1) * 0.45,
   };
 }
+
+/** Combined idle offset for one macro cell — shared by canvas idle and zoom uniforms. */
+export function tileMacroOffset(
+  row: number,
+  col: number,
+  timeMs: number,
+): { x: number; y: number } {
+  const jitter = tileBaseJitter(row, col);
+  const wander = tileWanderOffset(row, col, timeMs);
+  return { x: jitter.x + wander.x, y: jitter.y + wander.y };
+}
+
+const MACRO_OFFSET_PACK = new Float32Array(64 * 2);
+
+/** Pack 8×8 macro offsets as [x0,y0,x1,y1,…] (reuses one buffer). */
+export function packMacroOffsets(timeMs: number): Float32Array {
+  const out = MACRO_OFFSET_PACK;
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const o = tileMacroOffset(row, col, timeMs);
+      const i = (row * 8 + col) * 2;
+      out[i] = o.x;
+      out[i + 1] = o.y;
+    }
+  }
+  return out;
+}

@@ -155,36 +155,25 @@ precision mediump float;
 varying vec2 v_uv;
 uniform vec4 u_boundsFrom;
 uniform vec4 u_boundsTo;
-uniform vec4 u_tileRect;
 uniform vec4 u_pickupTileRect;
 uniform vec2 u_resolution;
 uniform sampler2D u_background;
 uniform float u_progress;
 uniform float u_zoomIn;
+// Exact same offsets as idle canvas (JS-packed into a 64×1 RG texture).
+uniform sampler2D u_macroOffTex;
 ${MANDELBROT_GLSL}
 
-vec4 sampleBounds(vec4 b) {
-  return colorAtGlass(b, v_uv);
-}
+const float TILE_GAP = 3.0;
 
-bool inRect(float sx, float sy, vec4 r) {
-  return sx >= r.x && sx < r.x + r.z && sy >= r.y && sy < r.y + r.w;
-}
-
-vec4 zoomInBackground(vec2 uv, float sx, float sy) {
-  if (inRect(sx, sy, u_pickupTileRect)) return vec4(0.0);
-  vec4 bg = texture2D(u_background, uv);
-  return vec4(bg.rgb, bg.a * (1.0 - u_progress));
-}
-
-vec4 zoomOutParent(float sx, float sy) {
-  if (inRect(sx, sy, u_pickupTileRect)) return vec4(0.0);
-  vec4 parent = sampleBounds(u_boundsTo);
-  return vec4(parent.rgb, parent.a * u_progress);
+// O(1) lookup — WebGL1 forbids dynamic indexing of uniform arrays.
+vec2 macroOffset(float row, float col) {
+  float idx = row * 8.0 + col;
+  vec2 enc = texture2D(u_macroOffTex, vec2((idx + 0.5) / 64.0, 0.5)).rg;
+  return enc * 8.0 - 4.0;
 }
 
 vec4 over(vec4 src, vec4 dst) {
-  // Straight-alpha Porter-Duff over (matches idle canvas compositing; do not premultiply for GL blend).
   float outA = src.a + dst.a * (1.0 - src.a);
   vec3 outRgb = outA > 1e-4
     ? (src.rgb * src.a + dst.rgb * dst.a * (1.0 - src.a)) / outA
@@ -192,56 +181,132 @@ vec4 over(vec4 src, vec4 dst) {
   return vec4(outRgb, outA);
 }
 
-// Zoom-in fly-apart: 64 nested faces move (full duration) and scale (after 25% hold)
-// analytically from idle positions to the next 8×8 grid. No extra RT for flying faces —
-// each face is shaded with the same colorAtGlass path as idle.
+// Idle-style wandering macros for the fading parent/background during zoom.
+vec4 wanderingMacros(
+  float sx,
+  float sy,
+  bool sampleBg,
+  float alphaMul,
+  bool holePickup
+) {
+  float cell = u_resolution.x / 8.0;
+  float halfGap = TILE_GAP * 0.5;
+  float dest = cell - TILE_GAP;
+  float animCol = u_pickupTileRect.x / cell;
+  float animRow = u_pickupTileRect.y / cell;
+
+  for (int row = 0; row < 8; row++) {
+    for (int col = 0; col < 8; col++) {
+      float rf = float(row);
+      float cf = float(col);
+      if (holePickup && abs(rf - animRow) < 0.1 && abs(cf - animCol) < 0.1) continue;
+
+      vec2 off = macroOffset(rf, cf);
+      vec2 origin = vec2(cf, rf) * cell + vec2(halfGap) + off;
+      vec2 local = (vec2(sx, sy) - origin) / dest;
+      if (local.x < 0.0 || local.x >= 1.0 || local.y < 0.0 || local.y >= 1.0) continue;
+
+      vec2 logicalUv = vec2(
+        (cf + local.x) / 8.0,
+        1.0 - (rf + local.y) / 8.0
+      );
+      vec4 sample = sampleBg
+        ? texture2D(u_background, logicalUv)
+        : colorAtGlass(u_boundsTo, logicalUv);
+      return vec4(sample.rgb, sample.a * alphaMul);
+    }
+  }
+  return vec4(0.0);
+}
+
+// Zoom-in fly-apart with wandered start (selected tile) and end (destination macros).
 vec4 zoomInFlyApart(float sx, float sy) {
   float t = clamp(u_progress, 0.0, 1.0);
-  // Move + scale concurrent; scale holds for the first quarter, then ease-in over the rest.
   const float SCALE_HOLD = 0.25;
-  float moveT = t * t; // quadratic ease-in over full duration
+  float moveT = t * t;
   float sizeU = clamp((t - SCALE_HOLD) / (1.0 - SCALE_HOLD), 0.0, 1.0);
-  float sizeT = sizeU * sizeU; // quadratic ease-in over the remaining span
+  float sizeT = sizeU * sizeU;
 
-  vec2 startSize = vec2(u_pickupTileRect.z, u_pickupTileRect.w) / 8.0;
-  vec2 endSize = u_resolution / 8.0;
-  vec2 pickupOrigin = u_pickupTileRect.xy;
+  float cell = u_resolution.x / 8.0;
+  float halfGap = TILE_GAP * 0.5;
+  float startFace = (cell - TILE_GAP) / 8.0;
+  float endFace = cell - TILE_GAP;
+  float animCol = u_pickupTileRect.x / cell;
+  float animRow = u_pickupTileRect.y / cell;
+  vec2 pickOff = macroOffset(animRow, animCol);
+  vec2 pickOrigin = u_pickupTileRect.xy + pickOff + vec2(halfGap);
 
-  // Inverse map: recover face id from screen pos via lerped centers (faces never overlap).
-  // center(id) = (id+0.5)*mix(start,end,moveT) + (1-moveT)*pickupOrigin
-  vec2 spacing = mix(startSize, endSize, moveT);
-  vec2 idF = floor((vec2(sx, sy) - (1.0 - moveT) * pickupOrigin) / spacing);
-  idF = clamp(idF, 0.0, 7.0);
+  for (int j = 0; j < 8; j++) {
+    for (int i = 0; i < 8; i++) {
+      vec2 idF = vec2(float(i), float(j));
+      vec2 startC = pickOrigin + (idF + 0.5) * startFace;
+      vec2 endOff = macroOffset(idF.y, idF.x);
+      vec2 endC = idF * cell + vec2(halfGap) + endOff + vec2(0.5 * endFace);
+      vec2 c = mix(startC, endC, moveT);
+      vec2 sz = mix(vec2(startFace), vec2(endFace), sizeT);
+      vec2 local = (vec2(sx, sy) - (c - sz * 0.5)) / sz;
+      if (local.x < 0.0 || local.x >= 1.0 || local.y < 0.0 || local.y >= 1.0) continue;
 
-  vec2 startC = pickupOrigin + (idF + 0.5) * startSize;
-  vec2 endC = (idF + 0.5) * endSize;
-  vec2 c = mix(startC, endC, moveT);
-  vec2 sz = mix(startSize, endSize, sizeT);
-  vec2 halfSz = sz * 0.5;
-  vec2 local = (vec2(sx, sy) - (c - halfSz)) / sz;
+      vec2 parentUv = vec2(
+        (animCol + (idF.x + local.x) / 8.0) / 8.0,
+        1.0 - (animRow + (idF.y + local.y) / 8.0) / 8.0
+      );
+      vec4 fromLook = colorAtGlass(u_boundsFrom, parentUv);
+      if (sizeT <= 0.0) return fromLook;
 
-  if (local.x < 0.0 || local.x >= 1.0 || local.y < 0.0 || local.y >= 1.0) {
-    return vec4(0.0);
+      vec2 cellUv = vec2(
+        (idF.x + local.x) / 8.0,
+        1.0 - (idF.y + local.y) / 8.0
+      );
+      return mix(fromLook, colorAtGlass(u_boundsTo, cellUv), sizeT);
+    }
   }
+  return vec4(0.0);
+}
 
-  // Idle nested-face UV inside the selected macro tile (same glass path as idle).
-  float cellPx = u_resolution.x / 8.0;
-  float animCol = u_pickupTileRect.x / cellPx;
-  float animRow = u_pickupTileRect.y / cellPx;
-  vec2 parentUv = vec2(
-    (animCol + (idF.x + local.x) / 8.0) / 8.0,
-    1.0 - (animRow + (idF.y + local.y) / 8.0) / 8.0
-  );
-  vec4 fromLook = colorAtGlass(u_boundsFrom, parentUv);
+// Zoom-out fly-together: shrink from wandered macros into wandered parent nested faces.
+vec4 zoomOutFlyTogether(float sx, float sy) {
+  float t = clamp(u_progress, 0.0, 1.0);
+  const float MOVE_HOLD = 0.25;
+  float sizeT = t * t;
+  float moveU = clamp((t - MOVE_HOLD) / (1.0 - MOVE_HOLD), 0.0, 1.0);
+  float moveT = moveU * moveU;
 
-  // As faces grow into macro tiles, blend toward nested destination shading.
-  if (sizeT <= 0.0) return fromLook;
-  float localV = 1.0 - local.y;
-  vec2 cellUv = vec2(
-    (idF.x + local.x) / 8.0,
-    (7.0 - idF.y + localV) / 8.0
-  );
-  return mix(fromLook, colorAtGlass(u_boundsTo, cellUv), sizeT);
+  float cell = u_resolution.x / 8.0;
+  float halfGap = TILE_GAP * 0.5;
+  float startFace = cell - TILE_GAP;
+  float endFace = (cell - TILE_GAP) / 8.0;
+  float animCol = u_pickupTileRect.x / cell;
+  float animRow = u_pickupTileRect.y / cell;
+  vec2 pickOff = macroOffset(animRow, animCol);
+  vec2 pickOrigin = u_pickupTileRect.xy + pickOff + vec2(halfGap);
+
+  for (int j = 0; j < 8; j++) {
+    for (int i = 0; i < 8; i++) {
+      vec2 idF = vec2(float(i), float(j));
+      vec2 startOff = macroOffset(idF.y, idF.x);
+      vec2 startC = idF * cell + vec2(halfGap) + startOff + vec2(0.5 * startFace);
+      vec2 endC = pickOrigin + (idF + 0.5) * endFace;
+      vec2 c = mix(startC, endC, moveT);
+      vec2 sz = mix(vec2(startFace), vec2(endFace), sizeT);
+      vec2 local = (vec2(sx, sy) - (c - sz * 0.5)) / sz;
+      if (local.x < 0.0 || local.x >= 1.0 || local.y < 0.0 || local.y >= 1.0) continue;
+
+      vec2 cellUv = vec2(
+        (idF.x + local.x) / 8.0,
+        1.0 - (idF.y + local.y) / 8.0
+      );
+      vec4 fromLook = colorAtGlass(u_boundsFrom, cellUv);
+      if (sizeT <= 0.0) return fromLook;
+
+      vec2 parentUv = vec2(
+        (animCol + (idF.x + local.x) / 8.0) / 8.0,
+        1.0 - (animRow + (idF.y + local.y) / 8.0) / 8.0
+      );
+      return mix(fromLook, colorAtGlass(u_boundsTo, parentUv), sizeT);
+    }
+  }
+  return vec4(0.0);
 }
 
 void main() {
@@ -249,26 +314,13 @@ void main() {
   float screenY = (1.0 - v_uv.y) * u_resolution.y;
 
   if (u_zoomIn > 0.5) {
-    vec4 under = zoomInBackground(v_uv, screenX, screenY);
+    vec4 under = wanderingMacros(screenX, screenY, true, 1.0 - u_progress, true);
     gl_FragColor = over(zoomInFlyApart(screenX, screenY), under);
     return;
   }
 
-  // Zoom-out: unchanged single-rect path
-  float tileL = u_tileRect.x;
-  float tileT = u_tileRect.y;
-  bool inTile = screenX >= tileL && screenX < tileL + u_tileRect.z &&
-                screenY >= tileT && screenY < tileT + u_tileRect.w;
-
-  vec4 under = zoomOutParent(screenX, screenY);
-
-  if (inTile) {
-    float u = (screenX - tileL) / u_tileRect.z;
-    float v = 1.0 - (screenY - tileT) / u_tileRect.w;
-    gl_FragColor = over(colorAtGlass(u_boundsFrom, vec2(u, v)), under);
-  } else {
-    gl_FragColor = under;
-  }
+  vec4 under = wanderingMacros(screenX, screenY, false, u_progress, true);
+  gl_FragColor = over(zoomOutFlyTogether(screenX, screenY), under);
 }
 `;
 
@@ -292,13 +344,18 @@ interface NormalUniforms {
 interface ZoomUniforms {
   boundsFrom: WebGLUniformLocation;
   boundsTo: WebGLUniformLocation;
-  tileRect: WebGLUniformLocation;
+  tileRect: WebGLUniformLocation | null; // unused by fly shaders; may be optimized out
   pickupTileRect: WebGLUniformLocation;
   resolution: WebGLUniformLocation;
   background: WebGLUniformLocation;
   progress: WebGLUniformLocation;
   zoomIn: WebGLUniformLocation;
+  macroOffTex: WebGLUniformLocation;
 }
+
+/** Encode px offsets in [-4, 4] as RG bytes for a 64×1 NEAREST texture. */
+const MACRO_OFF_ENCODE = 8; // decode: rg * 8 - 4
+const MACRO_OFF_BIAS = 4;
 
 function compileShader(
   gl: WebGLRenderingContext,
@@ -349,6 +406,8 @@ export class MandelbrotGlRenderer {
   private backgroundTexture: WebGLTexture | null = null;
   private backgroundFb: WebGLFramebuffer | null = null;
   private backgroundReady = false;
+  private macroOffTexture: WebGLTexture | null = null;
+  private macroOffBytes = new Uint8Array(64 * 4);
 
   private constructor(glCanvas: HTMLCanvasElement) {
     this.glCanvas = glCanvas;
@@ -412,15 +471,16 @@ export class MandelbrotGlRenderer {
     const background = webgl.getUniformLocation(zoom.program, "u_background");
     const progress = webgl.getUniformLocation(zoom.program, "u_progress");
     const zoomIn = webgl.getUniformLocation(zoom.program, "u_zoomIn");
+    const macroOffTex = webgl.getUniformLocation(zoom.program, "u_macroOffTex");
     if (
       boundsFrom === null ||
       boundsTo === null ||
-      tileRect === null ||
       pickupTileRect === null ||
       resolution === null ||
       background === null ||
       progress === null ||
-      zoomIn === null
+      zoomIn === null ||
+      macroOffTex === null
     ) {
       throw new Error("Missing zoom uniforms");
     }
@@ -434,14 +494,63 @@ export class MandelbrotGlRenderer {
       webgl.STATIC_DRAW,
     );
 
+    if (this.macroOffTexture) webgl.deleteTexture(this.macroOffTexture);
+    const macroTex = webgl.createTexture();
+    if (!macroTex) throw new Error("Failed to create macro-off texture");
+    webgl.bindTexture(webgl.TEXTURE_2D, macroTex);
+    webgl.texImage2D(
+      webgl.TEXTURE_2D,
+      0,
+      webgl.RGBA,
+      64,
+      1,
+      0,
+      webgl.RGBA,
+      webgl.UNSIGNED_BYTE,
+      null,
+    );
+    webgl.texParameteri(webgl.TEXTURE_2D, webgl.TEXTURE_MIN_FILTER, webgl.NEAREST);
+    webgl.texParameteri(webgl.TEXTURE_2D, webgl.TEXTURE_MAG_FILTER, webgl.NEAREST);
+    webgl.texParameteri(webgl.TEXTURE_2D, webgl.TEXTURE_WRAP_S, webgl.CLAMP_TO_EDGE);
+    webgl.texParameteri(webgl.TEXTURE_2D, webgl.TEXTURE_WRAP_T, webgl.CLAMP_TO_EDGE);
+    this.macroOffTexture = macroTex;
+
     this.gl = webgl;
     this.normal = { ...normal, uniforms: { bounds, resolution: normalResolution } };
     this.zoom = {
       ...zoom,
-      uniforms: { boundsFrom, boundsTo, tileRect, pickupTileRect, resolution, background, progress, zoomIn },
+      uniforms: {
+        boundsFrom,
+        boundsTo,
+        tileRect,
+        pickupTileRect,
+        resolution,
+        background,
+        progress,
+        zoomIn,
+        macroOffTex,
+      },
     };
     this.buffer = buffer;
     return webgl;
+  }
+
+  private uploadMacroOffsets(gl: WebGLRenderingContext, offsets: Float32Array): void {
+    const bytes = this.macroOffBytes;
+    for (let i = 0; i < 64; i++) {
+      const x = offsets[i * 2] ?? 0;
+      const y = offsets[i * 2 + 1] ?? 0;
+      const o = i * 4;
+      bytes[o] = Math.max(0, Math.min(255, Math.round(((x + MACRO_OFF_BIAS) / MACRO_OFF_ENCODE) * 255)));
+      bytes[o + 1] = Math.max(
+        0,
+        Math.min(255, Math.round(((y + MACRO_OFF_BIAS) / MACRO_OFF_ENCODE) * 255)),
+      );
+      bytes[o + 2] = 0;
+      bytes[o + 3] = 255;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this.macroOffTexture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 64, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
   }
 
   private ensureBackgroundTarget(gl: WebGLRenderingContext, width: number, height: number): void {
@@ -532,6 +641,7 @@ export class MandelbrotGlRenderer {
     pickupTile: TileRect,
     progress: number,
     zoomIn: boolean,
+    macroOffsets: Float32Array,
   ): HTMLCanvasElement {
     const gl = this.ensureGl(width, height);
     if (zoomIn && !this.backgroundReady) {
@@ -559,14 +669,20 @@ export class MandelbrotGlRenderer {
       boundsTo.imMin,
       boundsTo.imMax,
     );
-    gl.uniform4f(uniforms.tileRect, tile.x, tile.y, tile.w, tile.h);
+    if (uniforms.tileRect !== null) {
+      gl.uniform4f(uniforms.tileRect, tile.x, tile.y, tile.w, tile.h);
+    }
     gl.uniform4f(uniforms.pickupTileRect, pickupTile.x, pickupTile.y, pickupTile.w, pickupTile.h);
     gl.uniform2f(uniforms.resolution, width, height);
     gl.uniform1f(uniforms.progress, progress);
     gl.uniform1f(uniforms.zoomIn, zoomIn ? 1 : 0);
+    this.uploadMacroOffsets(gl, macroOffsets);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.backgroundTexture);
     gl.uniform1i(uniforms.background, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.macroOffTexture);
+    gl.uniform1i(uniforms.macroOffTex, 1);
     this.bindVertexAttrib(gl, posLoc);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
