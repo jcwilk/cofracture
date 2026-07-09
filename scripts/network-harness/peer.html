@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Cofracture network harness peer</title>
+  </head>
+  <body>
+    <pre id="out">idle</pre>
+    <script type="module">
+      import {
+        MeshDiscovery,
+        formNewMesh,
+        selectOldestMesh,
+        LISTEN_WINDOW_MS,
+      } from "../../src/mesh-discovery.ts";
+      import { DiscoveryAdapter } from "../../src/networking/discovery-adapter.ts";
+      import {
+        startNetworkingSession,
+        stopNetworkingSession,
+      } from "../../src/networking/session.ts";
+
+      const out = document.getElementById("out");
+      const errors = [];
+      const networkingErrors = [];
+
+      function isNetworkingError(message) {
+        const m = String(message).toLowerCase();
+        return (
+          m.includes("removelistener") ||
+          m.includes("webtorrent") ||
+          m.includes("mesh discovery") ||
+          m.includes("already destroyed") ||
+          m.includes("torrent") ||
+          m.includes("tracker") ||
+          m.includes("presence") ||
+          m.includes("iroh") ||
+          m.includes("cannot read properties of null")
+        );
+      }
+
+      function note(err, source = "page") {
+        const message = err?.message ? String(err.message) : String(err);
+        const entry = {
+          source,
+          message,
+          stack: err?.stack ? String(err.stack) : "",
+          at: Date.now(),
+          networking: isNetworkingError(message),
+        };
+        errors.push(entry);
+        if (entry.networking) networkingErrors.push(entry);
+        out.textContent = JSON.stringify(
+          { errorCount: errors.length, networkingErrorCount: networkingErrors.length, last: entry },
+          null,
+          2,
+        );
+      }
+
+      window.addEventListener("error", (ev) => note(ev.error || ev.message, "error"));
+      window.addEventListener("unhandledrejection", (ev) => note(ev.reason, "unhandledrejection"));
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      function endpointId(label) {
+        return `harness-${label}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      /**
+       * Headless peer factory — discovery transport only (no Mandelbrot UI).
+       */
+      async function spawnDiscoveryPeer(label, { advertise = true } = {}) {
+        const id = endpointId(label);
+        const adapter = new DiscoveryAdapter();
+        const discovery = adapter.create(id, formNewMesh());
+        if (advertise) {
+          const result = await adapter.startAdvertising();
+          if (!result.ok) note(result.error, "adapter-start");
+        }
+        return {
+          id,
+          adapter,
+          discovery,
+          mesh: () => discovery.currentMesh,
+          async stop() {
+            const result = await adapter.stop();
+            if (!result.ok) note(result.error, "adapter-stop");
+            return result;
+          },
+        };
+      }
+
+      window.__networkHarness = {
+        errors,
+        networkingErrors,
+        LISTEN_WINDOW_MS,
+
+        status() {
+          return {
+            errorCount: errors.length,
+            networkingErrorCount: networkingErrors.length,
+            errors: errors.slice(),
+            networkingErrors: networkingErrors.slice(),
+          };
+        },
+
+        clearErrors() {
+          errors.length = 0;
+          networkingErrors.length = 0;
+          out.textContent = "cleared";
+        },
+
+        /**
+         * Two-peer discovery/startup: assert a coherent mesh membership outcome.
+         */
+        async runTwoPeerDiscovery({ listenMs = 4000, settleMs = 1500 } = {}) {
+          const startCount = networkingErrors.length;
+          out.textContent = "two-peer discovery…";
+
+          const a = await spawnDiscoveryPeer("a");
+          const bAdapter = new DiscoveryAdapter();
+          const bId = endpointId("b");
+          const bDiscovery = bAdapter.create(bId, formNewMesh());
+
+          // B listens while A advertises on the shared swarm.
+          const listenPromise = bDiscovery.listen(listenMs);
+          await sleep(200);
+          // Keep A advertising during B's listen window.
+          await sleep(listenMs);
+          const listenResult = await listenPromise;
+
+          let outcome = "none";
+          let shared = false;
+          if (listenResult.mesh) {
+            outcome = "join-existing";
+            shared = listenResult.mesh.meshId === a.mesh().meshId;
+            bDiscovery.adoptMesh(listenResult.mesh);
+          } else {
+            // Form new mesh if nothing heard (still a coherent outcome under isolation).
+            const mesh = formNewMesh();
+            bDiscovery.adoptMesh(mesh);
+            outcome = "form-new";
+          }
+
+          await bAdapter.startAdvertising();
+          await sleep(settleMs);
+
+          // After both advertise, either B joined A's mesh or both have valid mesh state.
+          const aMesh = a.mesh();
+          const bMesh = bDiscovery.currentMesh;
+          const coherent =
+            Boolean(aMesh?.meshId) &&
+            Boolean(bMesh?.meshId) &&
+            (shared || outcome === "form-new" || aMesh.meshId === bMesh.meshId);
+
+          await a.stop();
+          await bAdapter.stop();
+
+          return {
+            ok: coherent && networkingErrors.length === startCount,
+            outcome,
+            shared,
+            aMeshId: aMesh?.meshId ?? null,
+            bMeshId: bMesh?.meshId ?? null,
+            bootstrapCount: listenResult.bootstrapEndpointIds?.length ?? 0,
+            networkingErrors: networkingErrors.slice(startCount),
+            layer: "transport",
+          };
+        },
+
+        /**
+         * Concurrent-peer teardown: stop some peers while others stay active.
+         */
+        async runConcurrentTeardown({
+          peers = 4,
+          stopCount = 2,
+          warmMs = 800,
+          settleMs = 400,
+        } = {}) {
+          const startCount = networkingErrors.length;
+          out.textContent = "concurrent teardown…";
+          const live = [];
+          for (let i = 0; i < peers; i++) {
+            live.push(await spawnDiscoveryPeer(`c${i}`));
+          }
+          await sleep(warmMs);
+
+          const toStop = live.splice(0, stopCount);
+          const stopResults = await Promise.all(toStop.map((p) => p.stop()));
+          await sleep(settleMs);
+
+          // Remaining peers continue advertising.
+          await sleep(300);
+
+          const remainingStops = await Promise.all(live.map((p) => p.stop()));
+          await sleep(settleMs);
+
+          const clean =
+            networkingErrors.length === startCount &&
+            [...stopResults, ...remainingStops].every((r) => r.ok);
+
+          return {
+            ok: clean,
+            stoppedFirst: stopCount,
+            remaining: peers - stopCount,
+            networkingErrors: networkingErrors.slice(startCount),
+            layer: "transport",
+            gate: "concurrent-peer-teardown",
+          };
+        },
+
+        /**
+         * Destroy-during-start: request stop before discovery startup finishes.
+         */
+        async runDestroyDuringStart({ cycles = 20, maxDelayMs = 40 } = {}) {
+          const startCount = networkingErrors.length;
+          out.textContent = "destroy-during-start…";
+          let stoppedClean = 0;
+
+          for (let i = 0; i < cycles; i++) {
+            const id = endpointId(`d${i}`);
+            const adapter = new DiscoveryAdapter();
+            const discovery = adapter.create(id, formNewMesh());
+            const startPromise = adapter.startAdvertising();
+            const delay = Math.floor(Math.random() * (maxDelayMs + 1));
+            await sleep(delay);
+            const stopResult = await adapter.stop();
+            // Absorb start rejection after stop.
+            await startPromise.catch(() => undefined);
+            if (stopResult.ok && discovery.isStopped) stoppedClean += 1;
+            await sleep(10);
+          }
+
+          await sleep(200);
+
+          return {
+            ok: networkingErrors.length === startCount && stoppedClean === cycles,
+            cycles,
+            stoppedClean,
+            networkingErrors: networkingErrors.slice(startCount),
+            layer: "transport",
+            gate: "destroy-during-start",
+          };
+        },
+
+        /**
+         * Rapid stop/restart of discovery peers.
+         */
+        async runRapidRestart({ cycles = 8, warmMs = 200 } = {}) {
+          const startCount = networkingErrors.length;
+          out.textContent = "rapid restart…";
+          let lastPeer = null;
+
+          for (let i = 0; i < cycles; i++) {
+            if (lastPeer) {
+              await lastPeer.stop();
+            }
+            lastPeer = await spawnDiscoveryPeer(`r${i}`);
+            await sleep(warmMs);
+          }
+          if (lastPeer) await lastPeer.stop();
+          await sleep(200);
+
+          return {
+            ok: networkingErrors.length === startCount,
+            cycles,
+            networkingErrors: networkingErrors.slice(startCount),
+            layer: "session",
+          };
+        },
+
+        /**
+         * Full session façade start/stop (includes presence wasm when available).
+         */
+        async runSessionStopClearsPeers() {
+          const startCount = networkingErrors.length;
+          out.textContent = "session stop…";
+          try {
+            // Short listen window — harness only; production uses default 10s.
+            const session = await startNetworkingSession({ listenWindowMs: 1500 });
+            const phaseBefore = session.phase;
+            // Simulate a peer highlight locally if session is active/failed.
+            session.peers.set("fake-peer", {
+              endpointId: "fake-peer",
+              bounds: { reMin: 0, reMax: 1, imMin: 0, imMax: 1 },
+              color: "#fff",
+              lastSeen: Date.now(),
+            });
+            await session.stop();
+            const peersCleared = session.peers.size === 0;
+            const phase = session.phase;
+            return {
+              ok: peersCleared && phase === "stopped" && networkingErrors.length === startCount,
+              phaseBefore,
+              phase,
+              peersCleared,
+              networkingErrors: networkingErrors.slice(startCount),
+              layer: "session",
+            };
+          } catch (err) {
+            note(err, "session");
+            await stopNetworkingSession().catch(() => undefined);
+            return {
+              ok: false,
+              error: String(err?.message ?? err),
+              networkingErrors: networkingErrors.slice(startCount),
+              layer: "session",
+            };
+          }
+        },
+
+        selectOldestMesh,
+      };
+
+      out.textContent = "ready";
+    </script>
+  </body>
+</html>

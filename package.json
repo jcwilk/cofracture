@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:network": "node scripts/network-harness/run.mjs",
+    "test:network:gates": "node scripts/network-harness/run.mjs --scenario=teardown-gates",
     "build:wasm": "wasm-pack build presence-wasm --dev --weak-refs --reference-types -t bundler -d pkg",
     "build:wasm:release": "wasm-pack build presence-wasm --release -t bundler -d pkg"
   },

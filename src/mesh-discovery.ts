@@ -277,7 +277,9 @@ export class MeshDiscovery {
   private advertiseTimer: number | null = null;
   private mergeCallback: ((older: MeshCandidate) => void) | null = null;
   private stopped = false;
+  private draining = false;
   private publishInFlight = false;
+  private stopPromise: Promise<void> | null = null;
   private latestAdPayload = encodeAdvertisement({
     endpoint_id: "",
     mesh_id: "",
@@ -295,6 +297,10 @@ export class MeshDiscovery {
     return this.mesh;
   }
 
+  get isStopped(): boolean {
+    return this.stopped && !this.draining;
+  }
+
   adoptMesh(mesh: MeshState): void {
     this.mesh = mesh;
   }
@@ -304,10 +310,23 @@ export class MeshDiscovery {
   }
 
   async listen(windowMs = LISTEN_WINDOW_MS): Promise<MeshListenResult> {
-    await this.ensureSwarmTorrent();
+    if (this.stopped) {
+      return { mesh: null, bootstrapEndpointIds: [] };
+    }
+    try {
+      await this.ensureSwarmTorrent();
+    } catch {
+      return { mesh: null, bootstrapEndpointIds: [] };
+    }
+    if (this.stopped) {
+      return { mesh: null, bootstrapEndpointIds: [] };
+    }
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, windowMs);
     });
+    if (this.stopped) {
+      return { mesh: null, bootstrapEndpointIds: [] };
+    }
 
     const now = Date.now();
     const selected = selectOldestMesh(this.meshes, now);
@@ -329,24 +348,123 @@ export class MeshDiscovery {
   }
 
   async startAdvertising(): Promise<void> {
+    if (this.draining) {
+      throw new Error("mesh discovery is draining");
+    }
     this.stopped = false;
     await this.ensureSwarmTorrent();
+    if (this.stopped) return;
     await this.publishOnce();
     this.scheduleNextAdvertise();
   }
 
-  stop(): void {
+  /**
+   * Drain in-flight seed/publish work, then destroy the WebTorrent client.
+   * Never throws across the session boundary.
+   */
+  async stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.drainAndDestroy();
+    try {
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = null;
+    }
+  }
+
+  private async drainAndDestroy(): Promise<void> {
     this.stopped = true;
+    this.draining = true;
     if (this.advertiseTimer !== null) {
       clearTimeout(this.advertiseTimer);
       this.advertiseTimer = null;
     }
-    this.swarmTorrentPromise = null;
-    this.swarmTorrent = null;
-    if (this.client && !(this.client as ClientRuntime).destroyed) {
-      this.client.destroy();
+
+    const inFlight = this.swarmTorrentPromise;
+    if (inFlight) {
+      try {
+        await Promise.race([
+          inFlight.catch(() => undefined),
+          new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 500);
+          }),
+        ]);
+      } catch {
+        // contained
+      }
     }
+
+    // Brief settle so tracker/socket setup can observe stopped before destroy.
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 25);
+    });
+
+    const torrent = this.swarmTorrent;
+    this.swarmTorrent = null;
+    this.swarmTorrentPromise = null;
+
+    if (torrent && !torrent.destroyed) {
+      try {
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const done = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          window.setTimeout(done, 300);
+          try {
+            (
+              torrent as TorrentRuntime & {
+                destroy?: (cb?: (err?: Error | null) => void) => void;
+              }
+            ).destroy?.(done);
+          } catch {
+            done();
+          }
+        });
+      } catch {
+        // contained
+      }
+    }
+
+    const client = this.client as ClientRuntime | null;
     this.client = null;
+    if (client && !client.destroyed) {
+      try {
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const done = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          window.setTimeout(done, 500);
+          try {
+            const destroy = (
+              client as WebTorrentClient & {
+                destroy: (cb?: (err?: Error | Error[] | null) => void) => void;
+              }
+            ).destroy;
+            destroy.call(client, (err?: Error | Error[] | null) => {
+              if (err) {
+                // Teardown faults are contained at the adapter boundary.
+                console.warn("mesh discovery client destroy:", err);
+              }
+              done();
+            });
+          } catch (err) {
+            console.warn("mesh discovery client destroy threw:", err);
+            done();
+          }
+        });
+      } catch (err) {
+        console.warn("mesh discovery stop failed:", err);
+      }
+    }
+
+    this.wireHandlerAttached = false;
+    this.draining = false;
   }
 
   bootstrapForMesh(meshId: string): string[] {
@@ -367,10 +485,25 @@ export class MeshDiscovery {
   }
 
   private async ensureClient(): Promise<WebTorrentClient> {
+    if (this.stopped) {
+      throw new Error("mesh discovery stopped");
+    }
     const client = this.client as ClientRuntime | null;
     if (client && !client.destroyed) return this.client!;
     const WebTorrent = await loadWebTorrent();
-    this.client = new WebTorrent();
+    if (this.stopped) {
+      throw new Error("mesh discovery stopped");
+    }
+    const next = new WebTorrent() as ClientRuntime;
+    // Contain async WebTorrent errors so they do not become page-level uncaughts.
+    (
+      next as WebTorrentClient & {
+        on(event: "error", cb: (err: Error | Error[]) => void): void;
+      }
+    ).on("error", (err) => {
+      console.warn("mesh discovery webtorrent error:", err);
+    });
+    this.client = next;
     return this.client;
   }
 
@@ -403,7 +536,11 @@ export class MeshDiscovery {
 
     this.swarmTorrentPromise = this.createSwarmTorrent();
     try {
-      this.swarmTorrent = await this.swarmTorrentPromise;
+      const torrent = await this.swarmTorrentPromise;
+      if (this.stopped) {
+        throw new Error("mesh discovery stopped");
+      }
+      this.swarmTorrent = torrent;
       return this.swarmTorrent;
     } finally {
       this.swarmTorrentPromise = null;
@@ -412,6 +549,9 @@ export class MeshDiscovery {
 
   private async createSwarmTorrent(): Promise<TorrentRuntime> {
     const client = await this.ensureClient();
+    if (this.stopped) {
+      throw new Error("mesh discovery stopped");
+    }
     const infoHash = SWARM_INFO_HASH;
     const existing = client.torrents.find(
       (torrent) => !(torrent as TorrentRuntime).destroyed && torrent.infoHash === infoHash,
@@ -422,25 +562,54 @@ export class MeshDiscovery {
     }
 
     return new Promise<TorrentRuntime>((resolve, reject) => {
+      if (this.stopped) {
+        reject(new Error("mesh discovery stopped"));
+        return;
+      }
       const payload = new File([SWARM_NAME], SWARM_NAME, {
         type: "application/octet-stream",
       });
-      const torrent = (client as WebTorrentClient & {
-        seed: (
-          input: File,
-          opts: { name: string },
-          cb: (torrent: Torrent) => void,
-        ) => Torrent;
-      }).seed(payload, { name: SWARM_NAME }, (seeded) => {
-        if (this.stopped) return;
-        const runtime = seeded as TorrentRuntime;
-        this.attachWireHandler(runtime);
-        resolve(runtime);
-      }) as TorrentRuntime;
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      try {
+        const torrent = (client as WebTorrentClient & {
+          seed: (
+            input: File,
+            opts: { name: string },
+            cb: (torrent: Torrent) => void,
+          ) => Torrent;
+        }).seed(payload, { name: SWARM_NAME }, (seeded) => {
+          if (this.stopped) {
+            finish(() => reject(new Error("mesh discovery stopped")));
+            return;
+          }
+          const runtime = seeded as TorrentRuntime;
+          this.attachWireHandler(runtime);
+          finish(() => resolve(runtime));
+        }) as TorrentRuntime;
 
-      torrent.once("error", (err: Error) => {
-        if (!this.stopped) reject(err);
-      });
+        torrent.once("error", (err: Error) => {
+          finish(() => {
+            if (this.stopped) {
+              reject(new Error("mesh discovery stopped"));
+            } else {
+              reject(err);
+            }
+          });
+        });
+      } catch (err) {
+        finish(() => {
+          if (this.stopped) {
+            reject(new Error("mesh discovery stopped"));
+          } else {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        });
+      }
     });
   }
 
@@ -498,9 +667,12 @@ export class MeshDiscovery {
       this.latestAdPayload = encodeAdvertisement(ad);
 
       await this.ensureSwarmTorrent();
+      if (this.stopped) return;
       this.broadcastToPeers();
     } catch (err) {
-      console.warn("mesh discovery publish failed:", err);
+      if (!this.stopped) {
+        console.warn("mesh discovery publish failed:", err);
+      }
     } finally {
       this.publishInFlight = false;
     }
@@ -509,9 +681,10 @@ export class MeshDiscovery {
 
 export async function runInitialDiscovery(
   endpointId: string,
+  listenWindowMs = LISTEN_WINDOW_MS,
 ): Promise<{ discovery: MeshDiscovery; mesh: MeshState; bootstrapEndpointIds: string[] }> {
   const discovery = new MeshDiscovery(endpointId, formNewMesh());
-  const listenResult = await discovery.listen();
+  const listenResult = await discovery.listen(listenWindowMs);
 
   if (listenResult.mesh) {
     discovery.adoptMesh(listenResult.mesh);
