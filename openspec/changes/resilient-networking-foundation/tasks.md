@@ -18,13 +18,14 @@
 - [ ] 3.2 Implement a two-peer discovery/startup scenario that asserts a coherent mesh membership outcome
 - [ ] 3.3 Implement lifecycle stress scenarios: overlapping stop while peers remain active, and rapid stop/restart
 - [ ] 3.4 Fail harness runs when any participant surfaces an uncaught networking error during those scenarios
-- [ ] 3.5 If consulting the exploratory destroy-race spike, treat it as non-authoritative guidance only; implement harness scenarios from this change’s contracts (do not promote or polish the spike into the suite)
+- [ ] 3.5 Encode spike-evidenced teardown failure classes as durable harness gates (concurrent-peer teardown uncaught errors; destroy-during-start) that fail on broken builds
+- [ ] 3.6 If consulting the exploratory destroy-race spike, treat it as non-authoritative guidance only; implement harness scenarios from this change’s contracts (do not promote or polish the spike into the suite)
 
-### 4. Teardown safety against living discovery/presence contracts
+### 4. Fix until harness gates pass
 
-- [ ] 4.1 Make discovery stop / page-leave teardown satisfy “no uncaught error while others advertise”
+- [ ] 4.1 Change product networking behavior until concurrent-peer teardown and destroy-during-start harness gates pass (mechanism unconstrained; broader refactors acceptable)
 - [ ] 4.2 Make presence session stop clear peer highlights and leave local exploration working
-- [ ] 4.3 Verify destroy-during-start (stop before discovery startup finishes) ends stopped without uncaught errors
+- [ ] 4.3 Re-run the teardown/lifecycle harness gates and record passing evidence before finish
 
 ### 5. Spike cleanup (required before finish)
 
@@ -40,6 +41,7 @@
 
 - Replacing WebTorrent or iroh with different transports.
 - Private rooms, signed discovery payloads, Byzantine-hard discovery.
-- Making every intermittent third-party race fail CI on a single short run (optional longer soak may be added later by intent).
+- Prescribing a specific teardown-fix implementation technique.
+- Cataloging every future intermittent third-party race beyond the evidenced failure classes gated above.
 - Full rewrite of fractal UI or presence highlight visuals.
 - Keeping or committing the exploratory destroy-race spike as project tooling.

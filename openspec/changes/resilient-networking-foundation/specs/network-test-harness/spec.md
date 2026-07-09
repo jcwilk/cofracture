@@ -23,6 +23,23 @@ The harness SHALL include scenarios that overlap session start and stop across p
 - **WHEN** it starts a new session immediately afterward
 - **THEN** the new session can proceed without uncaught errors attributable to the previous session’s teardown
 
+### Requirement: Known teardown failure evidence becomes harness gates that must pass
+Failure modes already evidenced during exploratory multi-peer teardown stress (uncaught errors during discovery/session stop while peers remain active, and stop requested before discovery startup finishes) SHALL be represented as harness scenarios. Those scenarios SHALL fail while the defect remains and SHALL pass only after product behavior no longer surfaces those uncaught errors. Shipping or closing the change while those scenarios still fail is not allowed.
+
+#### Scenario: Concurrent-teardown failure class is gated
+- **GIVEN** exploratory work previously observed uncaught networking errors when stopping discovery or a session while other peers stayed active
+- **WHEN** the corresponding harness scenario runs against a build that still has that defect
+- **THEN** the harness fails because an uncaught networking teardown error is observed
+- **WHEN** the defect has been corrected in product behavior
+- **THEN** the same harness scenario passes with clean shutdown and no uncaught networking teardown error
+
+#### Scenario: Destroy-during-start failure class is gated
+- **GIVEN** exploratory work previously observed unsafe teardown when stop was requested before discovery startup finished
+- **WHEN** the corresponding harness scenario runs against a build that still has that defect
+- **THEN** the harness fails
+- **WHEN** the defect has been corrected
+- **THEN** the harness scenario passes with a stopped discovery state and no uncaught error
+
 ### Requirement: Harness results distinguish policy, session, and transport failures
 Harness output SHALL make it possible to tell whether a failure is in deterministic policy expectations, session lifecycle, or live transport behavior, so contributors can target fixes without re-running the full application UI.
 
