@@ -40,8 +40,11 @@ const float GLASS_CORNER = 0.26;
 const float GLASS_K = 0.28;
 const float GLASS_LENS = 0.85;
 
-vec2 glassLocal(vec2 uv) {
-  return fract(uv * GLASS_N) * 2.0 - 1.0;
+// One consistent cell id + local [-1,1] from UV (avoids floor/fract disagreement + mediump beat).
+void glassCell(vec2 uv, out vec2 id, out vec2 p) {
+  highp vec2 g = uv * GLASS_N;
+  id = floor(g);
+  p = (g - id) * 2.0 - 1.0;
 }
 
 // Rounded-rect SDF in local [-1,1]: mostly square, soft corners.
@@ -51,20 +54,22 @@ float glassTileDist(vec2 p) {
 }
 
 // Soft coverage: partial alpha across the mortar edge (no opaque grid strokes).
+// AA width is a fixed ~1.25px in local space so it doesn't beat against non-integer px/cell.
 float glassCoverage(vec2 p) {
   float d = glassTileDist(p);
-  return 1.0 - smoothstep(-GLASS_GAP - GLASS_SOFT, -GLASS_GAP + GLASS_SOFT, d);
+  float pxPerCell = max(u_resolution.x / GLASS_N, 1.0);
+  float w = max(GLASS_SOFT, 2.5 / pxPerCell);
+  return 1.0 - smoothstep(-GLASS_GAP - w, -GLASS_GAP + w, d);
 }
 
 // Light face warp — hint of dome, mostly flat tile.
-vec2 glassUv(vec2 uv, vec2 p) {
-  vec2 id = floor(uv * GLASS_N);
+vec2 glassUv(vec2 id, vec2 p) {
   float r2 = dot(p, p);
   vec2 ps = p * (1.0 + GLASS_K * r2) * GLASS_LENS;
   return (id + clamp(ps * 0.5 + 0.5, 0.0, 1.0)) / GLASS_N;
 }
 
-// Specular-led glass: primary glossy L flush to upper-right edge + subtle opposite catch-light.
+// Specular-led glass: long tapering L from upper-right + soft complementary catch at bottom-left.
 vec4 glassShade(vec4 col, vec2 p) {
   float d = glassTileDist(p);
   float r = length(p);
@@ -77,16 +82,28 @@ vec4 glassShade(vec4 col, vec2 p) {
   float hi = max(0.0, -bevel) * (0.25 + 0.75 * edge);
   float lo = max(0.0, bevel) * (0.2 + 0.8 * edge);
 
-  // Face rim sits near |p|≈0.97; keep the L flush to that edge (local +y is screen-up).
-  float topArm = pow(max(0.0, 1.0 - abs(p.y - 0.92) * 5.2), 3.6)
-               * smoothstep(-0.25, 0.45, p.x) * smoothstep(0.99, 0.62, p.x);
-  float rightArm = pow(max(0.0, 1.0 - abs(p.x - 0.92) * 5.2), 3.6)
-                 * smoothstep(-0.25, 0.45, p.y) * smoothstep(0.99, 0.62, p.y);
-  float corner = pow(max(0.0, 1.0 - length(p - vec2(0.88, 0.88)) * 2.6), 2.8);
-  float rimSpec = max(topArm, max(rightArm, corner * 0.9)) * (0.4 + 0.6 * edge);
-  float hot = pow(max(0.0, 1.0 - length(p - vec2(0.86, 0.90)) * 2.8), 6.0);
-  // Subtle opposite catch-light (lower-left), not a face wash
-  float catchLight = pow(max(0.0, 1.0 - length(p - vec2(-0.58, -0.58)) * 1.8), 8.0) * 0.16;
+  // Primary L: starts at upper-right, stretches most of the way toward UL / LR, tapering thinner.
+  float alongTop = clamp((0.92 - p.x) / 1.95, 0.0, 1.0);   // 0 at UR → 1 near UL
+  float alongRight = clamp((0.92 - p.y) / 1.95, 0.0, 1.0); // 0 at UR → 1 near LR
+  float topWidth = mix(3.6, 11.0, alongTop);               // thicker near corner, thinner at tip
+  float rightWidth = mix(3.6, 11.0, alongRight);
+  float topFall = pow(1.0 - alongTop, 0.45);               // slower falloff so arms stay visible longer
+  float rightFall = pow(1.0 - alongRight, 0.45);
+  float topArm = pow(max(0.0, 1.0 - abs(p.y - 0.92) * topWidth), 2.8) * topFall
+               * smoothstep(-0.98, -0.88, p.x) * smoothstep(0.99, 0.90, p.x);
+  float rightArm = pow(max(0.0, 1.0 - abs(p.x - 0.92) * rightWidth), 2.8) * rightFall
+                 * smoothstep(-0.98, -0.88, p.y) * smoothstep(0.99, 0.90, p.y);
+  float corner = pow(max(0.0, 1.0 - length(p - vec2(0.90, 0.90)) * 2.2), 2.4);
+  float rimSpec = max(topArm, max(rightArm, corner * 0.95)) * (0.4 + 0.6 * edge);
+  float hot = pow(max(0.0, 1.0 - length(p - vec2(0.88, 0.90)) * 2.4), 5.0);
+
+  // Complementary bottom-left: soft crescent + short edge glints (different nature than the sharp L)
+  float softCrescent = pow(max(0.0, 1.0 - length(p - vec2(-0.70, -0.70)) * 1.35), 2.0) * 0.45;
+  float bottomGlint = pow(max(0.0, 1.0 - abs(p.y + 0.90) * 7.5), 2.8)
+                    * smoothstep(0.05, -0.55, p.x) * smoothstep(-0.98, -0.70, p.x) * 0.55;
+  float leftGlint = pow(max(0.0, 1.0 - abs(p.x + 0.90) * 7.5), 2.8)
+                  * smoothstep(0.05, -0.55, p.y) * smoothstep(-0.98, -0.70, p.y) * 0.55;
+  float catchLight = max(softCrescent, max(bottomGlint, leftGlint)) * (0.35 + 0.65 * edge);
 
   // Minimum substrate milkiness only on transparent fractal samples; thins toward the edge
   float milkAmt = (1.0 - col.a) * (1.0 - 0.55 * edge);
@@ -95,22 +112,24 @@ vec4 glassShade(vec4 col, vec2 p) {
 
   if (col.a < 0.5) {
     float face = 0.008 * (1.0 - 0.5 * edge);
-    float a = max(milkA, face + hi * 0.08 + lo * 0.02 + rimSpec * 0.7 + hot * 0.55 + catchLight * 0.35);
-    vec3 rgb = mix(milkRgb, vec3(1.0), clamp(rimSpec * 0.7 + hot * 0.55 + catchLight * 0.35, 0.0, 1.0));
+    float a = max(milkA, face + hi * 0.08 + lo * 0.02 + rimSpec * 0.7 + hot * 0.55 + catchLight * 0.5);
+    vec3 rgb = mix(milkRgb, vec3(1.0), clamp(rimSpec * 0.7 + hot * 0.55 + catchLight * 0.45, 0.0, 1.0));
     return vec4(rgb, clamp(a, 0.0, 0.68));
   }
 
   // Opaque fractal: no milkiness — only bevel / specular on the color
   vec3 rgb = col.rgb * (dome - rim + hi * 0.3 - lo * 0.35)
-           + vec3(rimSpec * 0.4 + hot * 0.35 + catchLight * 0.2);
+           + vec3(rimSpec * 0.4 + hot * 0.35 + catchLight * 0.28);
   return vec4(rgb, 1.0);
 }
 
 vec4 colorAtGlass(vec4 b, vec2 uv) {
-  vec2 p = glassLocal(uv);
+  vec2 id;
+  vec2 p;
+  glassCell(uv, id, p);
   float cover = glassCoverage(p);
   if (cover <= 0.001) return vec4(0.0);
-  vec2 u = glassUv(uv, p);
+  vec2 u = glassUv(id, p);
   float re = b.x + u.x * (b.y - b.x);
   float im = b.w - (1.0 - u.y) * (b.w - b.z);
   vec4 shaded = glassShade(colorAt(vec2(re, im)), p);
@@ -123,6 +142,7 @@ const FRAGMENT_SHADER = `
 precision mediump float;
 varying vec2 v_uv;
 uniform vec4 u_bounds;
+uniform vec2 u_resolution;
 ${MANDELBROT_GLSL}
 
 void main() {
@@ -164,29 +184,88 @@ vec4 zoomOutParent(float sx, float sy) {
 }
 
 vec4 over(vec4 src, vec4 dst) {
-  float a = src.a + dst.a * (1.0 - src.a);
-  vec3 rgb = src.rgb * src.a + dst.rgb * (1.0 - src.a);
-  return vec4(rgb, a);
+  // Straight-alpha Porter-Duff over (matches idle canvas compositing; do not premultiply for GL blend).
+  float outA = src.a + dst.a * (1.0 - src.a);
+  vec3 outRgb = outA > 1e-4
+    ? (src.rgb * src.a + dst.rgb * dst.a * (1.0 - src.a)) / outA
+    : vec3(0.0);
+  return vec4(outRgb, outA);
+}
+
+// Zoom-in fly-apart: 64 nested faces move (full duration) and scale (after 25% hold)
+// analytically from idle positions to the next 8×8 grid. No extra RT for flying faces —
+// each face is shaded with the same colorAtGlass path as idle.
+vec4 zoomInFlyApart(float sx, float sy) {
+  float t = clamp(u_progress, 0.0, 1.0);
+  // Move + scale concurrent; scale holds for the first quarter, then ease-in over the rest.
+  const float SCALE_HOLD = 0.25;
+  float moveT = t * t; // quadratic ease-in over full duration
+  float sizeU = clamp((t - SCALE_HOLD) / (1.0 - SCALE_HOLD), 0.0, 1.0);
+  float sizeT = sizeU * sizeU; // quadratic ease-in over the remaining span
+
+  vec2 startSize = vec2(u_pickupTileRect.z, u_pickupTileRect.w) / 8.0;
+  vec2 endSize = u_resolution / 8.0;
+  vec2 pickupOrigin = u_pickupTileRect.xy;
+
+  // Inverse map: recover face id from screen pos via lerped centers (faces never overlap).
+  // center(id) = (id+0.5)*mix(start,end,moveT) + (1-moveT)*pickupOrigin
+  vec2 spacing = mix(startSize, endSize, moveT);
+  vec2 idF = floor((vec2(sx, sy) - (1.0 - moveT) * pickupOrigin) / spacing);
+  idF = clamp(idF, 0.0, 7.0);
+
+  vec2 startC = pickupOrigin + (idF + 0.5) * startSize;
+  vec2 endC = (idF + 0.5) * endSize;
+  vec2 c = mix(startC, endC, moveT);
+  vec2 sz = mix(startSize, endSize, sizeT);
+  vec2 halfSz = sz * 0.5;
+  vec2 local = (vec2(sx, sy) - (c - halfSz)) / sz;
+
+  if (local.x < 0.0 || local.x >= 1.0 || local.y < 0.0 || local.y >= 1.0) {
+    return vec4(0.0);
+  }
+
+  // Idle nested-face UV inside the selected macro tile (same glass path as idle).
+  float cellPx = u_resolution.x / 8.0;
+  float animCol = u_pickupTileRect.x / cellPx;
+  float animRow = u_pickupTileRect.y / cellPx;
+  vec2 parentUv = vec2(
+    (animCol + (idF.x + local.x) / 8.0) / 8.0,
+    1.0 - (animRow + (idF.y + local.y) / 8.0) / 8.0
+  );
+  vec4 fromLook = colorAtGlass(u_boundsFrom, parentUv);
+
+  // As faces grow into macro tiles, blend toward nested destination shading.
+  if (sizeT <= 0.0) return fromLook;
+  float localV = 1.0 - local.y;
+  vec2 cellUv = vec2(
+    (idF.x + local.x) / 8.0,
+    (7.0 - idF.y + localV) / 8.0
+  );
+  return mix(fromLook, colorAtGlass(u_boundsTo, cellUv), sizeT);
 }
 
 void main() {
   float screenX = v_uv.x * u_resolution.x;
   float screenY = (1.0 - v_uv.y) * u_resolution.y;
 
+  if (u_zoomIn > 0.5) {
+    vec4 under = zoomInBackground(v_uv, screenX, screenY);
+    gl_FragColor = over(zoomInFlyApart(screenX, screenY), under);
+    return;
+  }
+
+  // Zoom-out: unchanged single-rect path
   float tileL = u_tileRect.x;
   float tileT = u_tileRect.y;
   bool inTile = screenX >= tileL && screenX < tileL + u_tileRect.z &&
                 screenY >= tileT && screenY < tileT + u_tileRect.w;
 
-  vec4 under = u_zoomIn > 0.5
-    ? zoomInBackground(v_uv, screenX, screenY)
-    : zoomOutParent(screenX, screenY);
+  vec4 under = zoomOutParent(screenX, screenY);
 
   if (inTile) {
     float u = (screenX - tileL) / u_tileRect.z;
     float v = 1.0 - (screenY - tileT) / u_tileRect.w;
-    vec4 b = u_zoomIn > 0.5 ? u_boundsTo : u_boundsFrom;
-    gl_FragColor = over(colorAtGlass(b, vec2(u, v)), under);
+    gl_FragColor = over(colorAtGlass(u_boundsFrom, vec2(u, v)), under);
   } else {
     gl_FragColor = under;
   }
@@ -207,6 +286,7 @@ interface GlProgram {
 
 interface NormalUniforms {
   bounds: WebGLUniformLocation;
+  resolution: WebGLUniformLocation;
 }
 
 interface ZoomUniforms {
@@ -286,6 +366,12 @@ export class MandelbrotGlRenderer {
   }
 
   private ensureGl(width: number, height: number): WebGLRenderingContext {
+    // Snap to a multiple of 64 so each micro-face gets the same integer pixel width
+    // (avoids periodic bright columns from uneven px/cell + soft-edge beat).
+    const snap = (n: number) => Math.max(64, Math.round(n / 64) * 64);
+    width = snap(width);
+    height = snap(height);
+
     if (this.gl && width === this.glWidth && height === this.glHeight) {
       return this.gl;
     }
@@ -314,7 +400,8 @@ export class MandelbrotGlRenderer {
 
     const normal = linkProgram(webgl, this.vertexShader, FRAGMENT_SHADER);
     const bounds = webgl.getUniformLocation(normal.program, "u_bounds");
-    if (bounds === null) throw new Error("Missing normal uniforms");
+    const normalResolution = webgl.getUniformLocation(normal.program, "u_resolution");
+    if (bounds === null || normalResolution === null) throw new Error("Missing normal uniforms");
 
     const zoom = linkProgram(webgl, this.vertexShader, FRAGMENT_SHADER_ZOOM);
     const boundsFrom = webgl.getUniformLocation(zoom.program, "u_boundsFrom");
@@ -348,7 +435,7 @@ export class MandelbrotGlRenderer {
     );
 
     this.gl = webgl;
-    this.normal = { ...normal, uniforms: { bounds } };
+    this.normal = { ...normal, uniforms: { bounds, resolution: normalResolution } };
     this.zoom = {
       ...zoom,
       uniforms: { boundsFrom, boundsTo, tileRect, pickupTileRect, resolution, background, progress, zoomIn },
@@ -411,6 +498,7 @@ export class MandelbrotGlRenderer {
       bounds.imMin,
       bounds.imMax,
     );
+    gl.uniform2f(uniforms.resolution, width, height);
     this.bindVertexAttrib(gl, posLoc);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -454,8 +542,8 @@ export class MandelbrotGlRenderer {
     gl.viewport(0, 0, width, height);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Composite in-shader with straight alpha (same as idle); blending would double-multiply.
+    gl.disable(gl.BLEND);
     gl.useProgram(program);
     gl.uniform4f(
       uniforms.boundsFrom,
@@ -481,7 +569,6 @@ export class MandelbrotGlRenderer {
     gl.uniform1i(uniforms.background, 0);
     this.bindVertexAttrib(gl, posLoc);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.disable(gl.BLEND);
 
     return this.glCanvas;
   }

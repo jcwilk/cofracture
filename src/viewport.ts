@@ -164,8 +164,12 @@ export class Viewport {
     if (this.layoutCache) return this.layoutCache;
     const w = window.innerWidth;
     const h = window.innerHeight;
+    // Snap to a multiple of 64 so each nested glass face gets the same integer CSS pixel width
+    // (avoids periodic bright columns from soft-edge beat against uneven px/cell).
+    const raw = Math.min(w, h);
+    const size = Math.max(64, Math.round(raw / 64) * 64);
     this.layoutCache =
-      w < h ? { x: 0, y: (h - w) / 2, size: w } : { x: (w - h) / 2, y: 0, size: h };
+      w < h ? { x: 0, y: (h - size) / 2, size } : { x: (w - size) / 2, y: 0, size };
     return this.layoutCache;
   }
 
@@ -221,10 +225,13 @@ export class Viewport {
     if (this.animating) {
       const rawT = Math.min(1, (performance.now() - this.animStart) / ZOOM_DURATION_MS);
       const eased = easeInCubic(rawT);
-      const tileT = this.animZoomIn ? eased : 1 - eased;
+      // Zoom-in: linear wall-clock progress; fly-apart easing (move/scale) lives in the shader.
+      // Zoom-out: cubic ease + existing single-tile reverse path (no fly-apart).
+      const progress = this.animZoomIn ? rawT : eased;
+      const tileT = this.animZoomIn ? progress : 1 - eased;
       const tile = this.tileRectForZoom(layout.size, tileT);
       const pickupTile = this.tileRectForZoom(layout.size, 0);
-      this.onZoomAnimation?.(true, this.animZoomIn, eased);
+      this.onZoomAnimation?.(true, this.animZoomIn, progress);
       const frame = renderZoomFractal(
         layout.size,
         layout.size,
@@ -232,7 +239,7 @@ export class Viewport {
         this.animTo,
         tile,
         pickupTile,
-        eased,
+        progress,
         this.animZoomIn,
       );
       this.ctx.drawImage(frame, 0, 0, layout.size, layout.size);
