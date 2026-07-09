@@ -14,7 +14,7 @@ main / viewport (UI)
 
 Policy (seq, oldest-mesh, backoff), transport (WebTorrent client lifecycle), and UI startup are interleaved. Teardown is `client.destroy()` / `pagehide` without a clear “draining” phase, which matches the observed intermittent `removeListener` / `client already destroyed` failures under multi-tab flap. Unit tests cover pure discovery helpers; acceptance scripts exercise the full app slowly. There is no layered harness that can stress lifecycle without the fractal.
 
-An uncommitted spike (`scripts/mesh-destroy-harness.html` + `scripts/repro-mesh-destroy-race.mjs`) proved we can isolate discovery teardown from the UI and that some destroy races are reproducible; it is input to this design, not the destination suite.
+An uncommitted exploratory spike (`scripts/mesh-destroy-harness.html` + `scripts/repro-mesh-destroy-race.mjs`) once showed that discovery teardown can be isolated from the UI and that some destroy races are observable. Treat it as **disposable guidance only**—partial, flaky, and not authoritative. Do not copy it forward as the suite; extract scenario *ideas* if useful, then **delete the spike files** before apply finishes so they are not left in the working tree or shipped.
 
 ## Goals / Non-Goals
 
@@ -30,7 +30,7 @@ An uncommitted spike (`scripts/mesh-destroy-harness.html` + `scripts/repro-mesh-
 - Replacing WebTorrent or iroh in this change (adapters may wrap them; swap is future).
 - Private rooms, signed discovery payloads, or Byzantine-hard discovery.
 - Perfect single-shot reproduction of every intermittent library race in CI (harness must make races *actionable* and catch regressions; flaky library bugs may still need soak modes).
-- Shipping the spike scripts as-is as the permanent suite.
+- Shipping, committing, or leaving the exploratory destroy-race spike scripts in the tree after apply.
 
 ## Decisions
 
@@ -59,8 +59,8 @@ An uncommitted spike (`scripts/mesh-destroy-harness.html` + `scripts/repro-mesh-
    Uncaught exceptions from discovery/presence teardown during multi-peer activity are bugs. Adapters catch and surface; session guarantees page remains usable (solo).  
    *Why:* Dependable networking means the explorer never dies because a tracker socket raced destroy.
 
-5. **Spike informs L2 scenarios; suite owns the API**  
-   Destroy-race scenarios (start/stop storm, warm stop wave, multi-tab flap) become named harness cases. Implementation may rewrite the spike into the suite layout during apply.
+5. **Spike is throwaway guidance; suite is greenfield relative to it**  
+   Scenario *themes* from the spike (start/stop storm, warm stop wave, multi-tab flap) may inspire named L2 cases. The harness API, layout, and runners are designed from this change’s specs—not by polishing the spike. Before finish: remove the spike paths if they still exist locally so apply-complete leaves no spike residue.
 
 ## Risks / Trade-offs
 
@@ -72,9 +72,10 @@ An uncommitted spike (`scripts/mesh-destroy-harness.html` + `scripts/repro-mesh-
 
 1. Introduce session façade wrapping current `initPresence` behavior without UI change.  
 2. Add L1 tests with fake discovery transport.  
-3. Fold spike scenarios into L2 harness; gate teardown safety.  
+3. Build L2 harness scenarios (optionally inspired by spike themes); gate teardown safety.  
 4. Harden real adapter stop/drain.  
-5. Only then thin `presence.ts` / `mesh-discovery.ts` toward policy vs adapter split.
+5. Delete any remaining exploratory destroy-race spike artifacts from the tree.  
+6. Only then thin `presence.ts` / `mesh-discovery.ts` toward policy vs adapter split.
 
 Rollback: façade can delegate to legacy path if a flag is needed; living behavior (bare URL join, solo fallback) stays.
 

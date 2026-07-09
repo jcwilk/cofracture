@@ -8,7 +8,7 @@ Collaborative presence and mesh discovery work in happy-path demos, but the netw
 - **Explicit session lifecycle**: Define start → discover → join → advertise → merge → leave/shutdown as observable phases with safe teardown (no uncaught transport failures; solo exploration remains available when networking fails).
 - **Network test harness foundation**: Introduce a self-coherent multi-peer harness that can drive discovery and presence scenarios headlessly, including lifecycle stress (overlapping start/stop, reload, multi-tab), without requiring the fractal viewport.
 - **Regression contract for teardown safety**: Discovery/presence shutdown under concurrent peer activity MUST NOT throw uncaught errors that break the page; failures degrade to solo mode.
-- **Harness spike retained as input, not product**: Existing uncommitted destroy-race spike informs design and tasks; this change does not treat that spike as the finished suite.
+- **Disposable destroy-race spike**: An uncommitted exploratory spike may be consulted as rough guidance only (take with a grain of salt). Apply MUST build the real harness from this change’s contracts, MUST NOT promote the spike into the permanent suite, and MUST remove the spike artifacts before apply finishes so they are not left in the tree.
 
 ## Capabilities
 
@@ -28,3 +28,4 @@ Collaborative presence and mesh discovery work in happy-path demos, but the netw
 - Does not change the public site URL join model or require a project-run coordination server.
 - Exact transport libraries, file layout, and CI wiring are design/task concerns — not living-spec obligations beyond observable behavior.
 - Full production-grade Byzantine hardening and private rooms remain out of scope.
+- The exploratory destroy-race spike is not part of the delivered product; finishing apply with those spike files still present is a failed close-out.

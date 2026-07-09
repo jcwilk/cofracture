@@ -18,7 +18,7 @@
 - [ ] 3.2 Implement a two-peer discovery/startup scenario that asserts a coherent mesh membership outcome
 - [ ] 3.3 Implement lifecycle stress scenarios: overlapping stop while peers remain active, and rapid stop/restart
 - [ ] 3.4 Fail harness runs when any participant surfaces an uncaught networking error during those scenarios
-- [ ] 3.5 Fold useful cases from the uncommitted destroy-race spike into the harness API (rewrite as needed; do not require keeping spike filenames)
+- [ ] 3.5 If consulting the exploratory destroy-race spike, treat it as non-authoritative guidance only; implement harness scenarios from this change’s contracts (do not promote or polish the spike into the suite)
 
 ### 4. Teardown safety against living discovery/presence contracts
 
@@ -26,10 +26,15 @@
 - [ ] 4.2 Make presence session stop clear peer highlights and leave local exploration working
 - [ ] 4.3 Verify destroy-during-start (stop before discovery startup finishes) ends stopped without uncaught errors
 
-### 5. Validation and archive
+### 5. Spike cleanup (required before finish)
 
-- [ ] 5.1 Run `openspec validate "resilient-networking-foundation" --type change` and resolve any failures
-- [ ] 5.2 Archive change and verify delta requirements are merged into living specs
+- [ ] 5.1 Remove exploratory destroy-race spike artifacts from the working tree (`scripts/mesh-destroy-harness.html`, `scripts/repro-mesh-destroy-race.mjs`, and any copies) so they are not present when apply finishes
+- [ ] 5.2 Confirm the delivered harness does not depend on those spike paths
+
+### 6. Validation and archive
+
+- [ ] 6.1 Run `openspec validate "resilient-networking-foundation" --type change` and resolve any failures
+- [ ] 6.2 Archive change and verify delta requirements are merged into living specs
 
 ## Explicitly deferred
 
@@ -37,3 +42,4 @@
 - Private rooms, signed discovery payloads, Byzantine-hard discovery.
 - Making every intermittent third-party race fail CI on a single short run (optional longer soak may be added later by intent).
 - Full rewrite of fractal UI or presence highlight visuals.
+- Keeping or committing the exploratory destroy-race spike as project tooling.
