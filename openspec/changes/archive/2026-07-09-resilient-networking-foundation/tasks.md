@@ -35,7 +35,7 @@
 ### 6. Validation and archive
 
 - [x] 6.1 Run `openspec validate "resilient-networking-foundation" --type change` and resolve any failures
-- [ ] 6.2 Archive change and verify delta requirements are merged into living specs
+- [x] 6.2 Archive change and verify delta requirements are merged into living specs
 
 ## Explicitly deferred
 
