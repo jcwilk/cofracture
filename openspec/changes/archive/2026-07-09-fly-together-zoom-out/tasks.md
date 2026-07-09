@@ -38,7 +38,7 @@
 ### 7. Validation and Archive
 
 - [x] 7.1 Run `openspec validate "fly-together-zoom-out" --type change` and resolve any failures
-- [ ] 7.2 Archive change and verify delta requirements are merged into living specs
+- [x] 7.2 Archive change and verify delta requirements are merged into living specs
 
 ## Explicitly deferred
 
