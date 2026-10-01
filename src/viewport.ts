@@ -2,13 +2,11 @@ import {
   CANONICAL_BOUNDS,
   boundsEqual,
   lerpBounds,
-  peerHighlightIsViewOutline,
   tileBounds,
   type Bounds,
 } from "./bounds";
 import { ZOOM_DURATION_MS, easeInCubic } from "./easing";
 import {
-  boundsToScreen,
   clearZoomBackground,
   drawFractal,
   prepareZoomBackground,
@@ -18,6 +16,14 @@ import {
 } from "./mandelbrot";
 import type { PeerPresence } from "./presence";
 import { packMacroOffsets, tileMacroOffset } from "./tile-style";
+import {
+  COLORING_SLOTS,
+  hexToHueSat,
+  packColoringWindows,
+  type ColoringWindow,
+  type PackedWindows,
+} from "./orbit-color";
+import { MESH_CAPACITY, retainedEndpointIds } from "./mesh-discovery";
 
 const GRID_SIZE = 8;
 const TILE_GAP = 3;
@@ -70,6 +76,9 @@ export class Viewport {
   private peerAnimLoopActive = false;
   /** Continuous idle redraw so macro-tile wander stays live. */
   private idleLoopActive = false;
+  private localColor = "#4363d8";
+  private localEndpointId = "local";
+  private fractalCacheKey = "";
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -111,6 +120,12 @@ export class Viewport {
 
   canZoomOut(): boolean {
     return this.parentStack.length > 0 && !this.animating;
+  }
+
+  setLocalIdentity(color: string, endpointId: string): void {
+    this.localColor = color;
+    this.localEndpointId = endpointId;
+    this.invalidateFractalCache();
   }
 
   setPeers(peers: Map<string, PeerPresence>): void {
@@ -231,6 +246,7 @@ export class Viewport {
       // Expanding rect kept for API compatibility; fly shaders key off pickup + progress.
       const tile = this.tileRectForZoom(layout.size, this.animZoomIn ? progress : 1 - progress);
       this.onZoomAnimation?.(true, this.animZoomIn, progress);
+      const viewNow = lerpBounds(this.animFrom, this.animTo, progress);
       const frame = renderZoomFractal(
         layout.size,
         layout.size,
@@ -241,6 +257,7 @@ export class Viewport {
         progress,
         this.animZoomIn,
         packMacroOffsets(now),
+        this.packedWindows(viewNow, now),
       );
       this.ctx.drawImage(frame, 0, 0, layout.size, layout.size);
     } else {
@@ -248,7 +265,6 @@ export class Viewport {
       if (this.fractalCache) {
         this.drawFractalWithGaps(this.fractalCache, this.bounds, layout.size);
       }
-      this.drawPeerHighlights(layout, this.bounds);
     }
 
     this.ctx.restore();
@@ -272,21 +288,56 @@ export class Viewport {
     }
   }
 
+  private windowHue(color: string): { hue: number; saturation: number } {
+    return hexToHueSat(color);
+  }
+
+  private packedWindows(localBounds: Bounds, now: number): PackedWindows {
+    const localHs = this.windowHue(this.localColor);
+    const windows: ColoringWindow[] = [
+      { bounds: localBounds, hue: localHs.hue, saturation: localHs.saturation },
+    ];
+    const peerIds = [...this.peers.keys()];
+    const retained = new Set(
+      retainedEndpointIds([this.localEndpointId, ...peerIds]),
+    );
+    const orderedPeers = peerIds
+      .filter((id) => id !== this.localEndpointId && retained.has(id))
+      .sort();
+    for (const id of orderedPeers) {
+      if (windows.length >= COLORING_SLOTS || windows.length >= MESH_CAPACITY) break;
+      const peer = this.peers.get(id);
+      if (!peer) continue;
+      const bounds = this.peerAnimStart.has(id)
+        ? this.interpolatePeerBounds(id, now)
+        : (this.peerDisplayed.get(id) ?? peer.bounds);
+      const hs = this.windowHue(peer.color);
+      windows.push({ bounds, hue: hs.hue, saturation: hs.saturation });
+    }
+    return packColoringWindows(windows);
+  }
+
   private ensureFractalCache(bounds: Bounds, size: number): void {
+    const now = performance.now();
+    const windows = this.packedWindows(bounds, now);
+    const key = `${size}|${bounds.reMin},${bounds.reMax},${bounds.imMin},${bounds.imMax}|${windows.rects}|${windows.hs}|${windows.mask}|${windows.bail}`;
     const cache = this.fractalCache;
     if (
       cache &&
       cache.width === size &&
       cache.height === size &&
-      boundsEqual(cache.bounds, bounds)
+      boundsEqual(cache.bounds, bounds) &&
+      key === this.fractalCacheKey
     ) {
       return;
     }
-    this.fractalCache = renderFractal(size, size, bounds);
+    this.fractalCacheKey = key;
+    this.fractalCache = renderFractal(size, size, bounds, windows);
   }
 
   private invalidateFractalCache(): void {
     this.fractalCache = null;
+    this.fractalCacheKey = "";
   }
 
   private interpolatePeerBounds(id: string, now: number): Bounds {
@@ -334,32 +385,6 @@ export class Viewport {
     requestAnimationFrame(loop);
   }
 
-  private drawPeerHighlights(layout: SquareLayout, viewBounds: Bounds): void {
-    const now = performance.now();
-    for (const [id, peer] of this.peers) {
-      const bounds = this.peerAnimStart.has(id)
-        ? this.interpolatePeerBounds(id, now)
-        : (this.peerDisplayed.get(id) ?? peer.bounds);
-
-      if (!this.peerAnimStart.has(id)) {
-        this.peerDisplayed.set(id, { ...bounds });
-      }
-
-      const outlineOnly = peerHighlightIsViewOutline(bounds, viewBounds);
-      const rect = outlineOnly
-        ? { x: 0, y: 0, w: layout.size, h: layout.size }
-        : boundsToScreen(bounds, viewBounds, 0, 0, layout.size);
-
-      this.ctx.strokeStyle = peer.color;
-      this.ctx.lineWidth = 3;
-      this.ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-      if (!outlineOnly) {
-        this.ctx.fillStyle = peer.color + "33";
-        this.ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-      }
-    }
-  }
-
   hitTest(clientX: number, clientY: number): { row: number; col: number } | null {
     if (this.animating) return null;
     const layout = this.computeSquareLayout();
@@ -381,7 +406,12 @@ export class Viewport {
     this.animRow = row;
     this.animCol = col;
     this.animZoomIn = true;
-    prepareZoomBackground(layout.size, layout.size, this.animFrom);
+    prepareZoomBackground(
+      layout.size,
+      layout.size,
+      this.animFrom,
+      this.packedWindows(this.animFrom, performance.now()),
+    );
     this.animStart = performance.now();
     this.animating = true;
     this.onZoomAnimation?.(true, true);

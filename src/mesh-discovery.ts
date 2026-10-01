@@ -10,11 +10,16 @@ export const BACKOFF_K0 = 5;
 export const SEQ_STORAGE_KEY = "cofracture-mesh-discovery-seq";
 const MESH_AD_EXT = "cofracture_mesh_ad";
 
+/** Participants in one mesh, including the local member. Matches coloring slots. */
+export const MESH_CAPACITY = 16;
+
 export interface MeshAdvertisement {
   endpoint_id: string;
   mesh_id: string;
   mesh_formed_at: number;
   seq: number;
+  /** Live member count including the sender. Absent on older clients. */
+  member_count?: number;
 }
 
 export interface MeshState {
@@ -25,6 +30,8 @@ export interface MeshState {
 export interface EndpointRecord {
   seq: number;
   lastSeen: number;
+  /** From the advertisement when the sender included it. */
+  memberCount?: number;
 }
 
 export interface MeshCandidate {
@@ -47,9 +54,22 @@ type WireLike = {
   peerExtendedMapping: Record<string, number>;
 };
 
+function readMemberCount(ad: Record<string, unknown>): number | undefined {
+  if (!Object.prototype.hasOwnProperty.call(ad, "member_count")) return undefined;
+  const count = ad.member_count;
+  if (typeof count === "number" && Number.isInteger(count) && count >= 1) return count;
+  return undefined;
+}
+
 function isValidAdvertisement(value: unknown): value is MeshAdvertisement {
   if (!value || typeof value !== "object") return false;
   const ad = value as Record<string, unknown>;
+  if (
+    Object.prototype.hasOwnProperty.call(ad, "member_count") &&
+    readMemberCount(ad) === undefined
+  ) {
+    return false;
+  }
   return (
     typeof ad.endpoint_id === "string" &&
     ad.endpoint_id.length > 0 &&
@@ -109,8 +129,29 @@ export function recordAdvertisement(
     mesh.meshFormedAt = Math.min(mesh.meshFormedAt, ad.mesh_formed_at);
   }
 
-  mesh.endpoints.set(ad.endpoint_id, { seq: ad.seq, lastSeen: now });
+  const memberCount = readMemberCount(ad as unknown as Record<string, unknown>);
+  const record: EndpointRecord = { seq: ad.seq, lastSeen: now };
+  if (memberCount !== undefined) record.memberCount = memberCount;
+  mesh.endpoints.set(ad.endpoint_id, record);
   return true;
+}
+
+export function meshIsFull(
+  mesh: MeshCandidate,
+  now: number,
+  validityMs = VALIDITY_WINDOW_MS,
+): boolean {
+  const live = liveEndpointsForMesh(mesh, now, validityMs);
+  if (live.size >= MESH_CAPACITY) return true;
+  for (const record of live.values()) {
+    if (record.memberCount !== undefined && record.memberCount >= MESH_CAPACITY) return true;
+  }
+  return false;
+}
+
+/** Lowest endpoint ids, so every member keeps the same 16. */
+export function retainedEndpointIds(endpointIds: Iterable<string>): string[] {
+  return [...new Set(endpointIds)].sort().slice(0, MESH_CAPACITY);
 }
 
 export function liveEndpointsForMesh(
@@ -143,6 +184,7 @@ export function selectOldestMesh(
   let best: MeshCandidate | null = null;
   for (const mesh of meshes.values()) {
     if (liveEndpointsForMesh(mesh, now, validityMs).size === 0) continue;
+    if (meshIsFull(mesh, now, validityMs)) continue;
     if (!best || mesh.meshFormedAt < best.meshFormedAt) {
       best = mesh;
     }
@@ -276,6 +318,8 @@ export class MeshDiscovery {
   private readonly meshes = new Map<string, MeshCandidate>();
   private advertiseTimer: number | null = null;
   private mergeCallback: ((older: MeshCandidate) => void) | null = null;
+  private capacityLeaveCallback: ((next: MeshCandidate | null) => void) | null = null;
+  private capacityLeaveSent = false;
   private stopped = false;
   private draining = false;
   private publishInFlight = false;
@@ -307,6 +351,11 @@ export class MeshDiscovery {
 
   onOlderMesh(callback: (older: MeshCandidate) => void): void {
     this.mergeCallback = callback;
+  }
+
+  /** Fired when this endpoint is outside the shared 16 and should join or form. */
+  onCapacityLeave(callback: (next: MeshCandidate | null) => void): void {
+    this.capacityLeaveCallback = callback;
   }
 
   async listen(windowMs = LISTEN_WINDOW_MS): Promise<MeshListenResult> {
@@ -481,6 +530,7 @@ export class MeshDiscovery {
     const accepted = recordAdvertisement(ad, this.lastSeqByEndpoint, this.meshes, now);
     if (accepted) {
       this.maybeTriggerMerge(ad.mesh_id, now);
+      this.enforceCapacity(now);
     }
   }
 
@@ -619,7 +669,24 @@ export class MeshDiscovery {
     if (!candidate) return;
     if (candidate.meshFormedAt >= this.mesh.meshFormedAt) return;
     if (liveEndpointsForMesh(candidate, now).size === 0) return;
+    if (meshIsFull(candidate, now)) return;
     this.mergeCallback(candidate);
+  }
+
+  private enforceCapacity(now: number): void {
+    const mesh = this.meshes.get(this.mesh.meshId);
+    if (!mesh) return;
+    const liveIds = [...liveEndpointsForMesh(mesh, now).keys()];
+    if (liveIds.length <= MESH_CAPACITY) {
+      this.capacityLeaveSent = false;
+      return;
+    }
+    if (retainedEndpointIds(liveIds).includes(this.endpointId)) return;
+    if (this.capacityLeaveSent || !this.capacityLeaveCallback) return;
+    this.capacityLeaveSent = true;
+    const others = new Map(this.meshes);
+    others.delete(this.mesh.meshId);
+    this.capacityLeaveCallback(selectOldestMesh(others, now));
   }
 
   private scheduleNextAdvertise(): void {
@@ -660,11 +727,19 @@ export class MeshDiscovery {
         mesh_id: this.mesh.meshId,
         mesh_formed_at: this.mesh.meshFormedAt,
         seq: nextSeq(),
+        member_count: 1,
       };
 
       const now = Date.now();
       recordAdvertisement(ad, this.lastSeqByEndpoint, this.meshes, now);
+      const recorded = this.meshes.get(this.mesh.meshId);
+      if (recorded) {
+        ad.member_count = Math.max(1, countLiveAdvertisersForMesh(recorded, now));
+        const self = recorded.endpoints.get(this.endpointId);
+        if (self) self.memberCount = ad.member_count;
+      }
       this.latestAdPayload = encodeAdvertisement(ad);
+      this.enforceCapacity(now);
 
       await this.ensureSwarmTorrent();
       if (this.stopped) return;

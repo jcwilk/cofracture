@@ -3,7 +3,10 @@ import {
   applyJitter,
   calculateAdvertiseInterval,
   calculateBackoffMultiplier,
+  MESH_CAPACITY,
+  meshIsFull,
   recordAdvertisement,
+  retainedEndpointIds,
   selectOldestMesh,
   shouldAcceptAdvertisement,
   type MeshAdvertisement,
@@ -65,6 +68,63 @@ describe("mesh selection", () => {
 
     const selected = selectOldestMesh(meshes, now);
     expect(selected?.meshId).toBe("mesh-old");
+  });
+
+  it("joins the oldest mesh that still has room", () => {
+    const now = 10_000;
+    const open = (id: string, formed: number, members: number, count?: number): MeshCandidate => ({
+      meshId: id,
+      meshFormedAt: formed,
+      endpoints: new Map(
+        Array.from({ length: members }, (_, i) => [
+          `${id}-${i}`,
+          { seq: 1, lastSeen: now, memberCount: count },
+        ]),
+      ),
+    });
+
+    const oldestOpen = new Map<string, MeshCandidate>([
+      ["old", open("old", 1, 3)],
+      ["new", open("new", 5, 2)],
+    ]);
+    expect(selectOldestMesh(oldestOpen, now)?.meshId).toBe("old");
+
+    const fullOldest = new Map<string, MeshCandidate>([
+      ["old", open("old", 1, MESH_CAPACITY)],
+      ["new", open("new", 5, 2)],
+    ]);
+    expect(selectOldestMesh(fullOldest, now)?.meshId).toBe("new");
+
+    const allFull = new Map<string, MeshCandidate>([
+      ["old", open("old", 1, 1, MESH_CAPACITY)],
+      ["new", open("new", 5, MESH_CAPACITY)],
+    ]);
+    expect(meshIsFull(allFull.get("old")!, now)).toBe(true);
+    expect(selectOldestMesh(allFull, now)).toBeNull();
+  });
+
+  it("treats one full advertisement as a full mesh and agrees who stays", () => {
+    const now = 10_000;
+    const meshes = new Map<string, MeshCandidate>();
+    const lastSeq = new Map<string, number>();
+    recordAdvertisement(
+      sampleAd({ endpoint_id: "solo", member_count: MESH_CAPACITY }),
+      lastSeq,
+      meshes,
+      now,
+    );
+    const mesh = meshes.get("mesh-a")!;
+    expect(mesh.endpoints.size).toBe(1);
+    expect(meshIsFull(mesh, now)).toBe(true);
+    expect(selectOldestMesh(meshes, now)).toBeNull();
+
+    const ids = ["m", "b", "q", "a", "z", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "n", "o"];
+    const stayA = retainedEndpointIds(ids);
+    const stayB = retainedEndpointIds([...ids].reverse());
+    expect(stayA).toEqual(stayB);
+    expect(stayA).toHaveLength(MESH_CAPACITY);
+    expect(stayA).not.toContain("z");
+    expect(stayA[0] < stayA[1]).toBe(true);
   });
 });
 

@@ -3,6 +3,7 @@ import { tileIndexFromBounds, tileIndexToScreen } from "./bounds";
 
 const GRID_SIZE = 8;
 import { MandelbrotGlRenderer, type TileRect } from "./mandelbrot-gl";
+import type { PackedWindows } from "./orbit-color";
 
 export interface FractalRender {
   canvas: HTMLCanvasElement;
@@ -47,8 +48,9 @@ export function renderFractal(
   width: number,
   height: number,
   bounds: Bounds,
+  windows: PackedWindows,
 ): FractalRender {
-  const live = getGlRenderer().render(width, height, bounds);
+  const live = getGlRenderer().render(width, height, bounds, windows);
   const canvas = retainCanvas(live, width, height);
   return { canvas, bounds: { ...bounds }, width, height };
 }
@@ -58,8 +60,9 @@ export function prepareZoomBackground(
   width: number,
   height: number,
   bounds: Bounds,
+  windows: PackedWindows,
 ): void {
-  getGlRenderer().cacheZoomBackground(width, height, bounds);
+  getGlRenderer().cacheZoomBackground(width, height, bounds, windows);
 }
 
 export function clearZoomBackground(): void {
@@ -77,6 +80,7 @@ export function renderZoomFractal(
   progress: number,
   zoomIn: boolean,
   macroOffsets: Float32Array,
+  windows: PackedWindows,
 ): HTMLCanvasElement {
   return getGlRenderer().renderZoom(
     width,
@@ -88,6 +92,7 @@ export function renderZoomFractal(
     progress,
     zoomIn,
     macroOffsets,
+    windows,
   );
 }
 

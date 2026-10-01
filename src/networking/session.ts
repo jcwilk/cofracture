@@ -1,5 +1,5 @@
 import type { Bounds } from "../bounds";
-import type { MeshCandidate, MeshState } from "../mesh-discovery";
+import { formNewMesh, type MeshCandidate, type MeshState } from "../mesh-discovery";
 import { DiscoveryAdapter } from "./discovery-adapter";
 import { colorForEndpoint, type PeerPresence } from "./peers";
 import type { NetworkingSessionApi, SessionPhase } from "./types";
@@ -203,6 +203,9 @@ export class NetworkingSession implements NetworkingSessionApi {
       this.discoveryAdapter.onOlderMesh((older) => {
         void this.attemptMerge(older);
       });
+      this.discoveryAdapter.onCapacityLeave((next) => {
+        void this.leaveOverCapacity(next);
+      });
 
       this.setPhase("active");
       this.pumpEvents();
@@ -237,27 +240,42 @@ export class NetworkingSession implements NetworkingSessionApi {
     }
   }
 
+  private async leaveOverCapacity(next: MeshCandidate | null): Promise<void> {
+    if (next) {
+      await this.joinMesh(next);
+      return;
+    }
+    await this.joinMesh(formNewMesh(), []);
+  }
+
   private async attemptMerge(older: MeshCandidate): Promise<void> {
-    if (!this.node || !this.mesh || this.merging) return;
+    if (!this.mesh) return;
     if (older.meshFormedAt >= this.mesh.meshFormedAt) return;
+    await this.joinMesh(older);
+  }
+
+  private async joinMesh(target: MeshCandidate | MeshState, bootstrapIds?: string[]): Promise<void> {
+    if (!this.node || !this.mesh || this.merging) return;
     if (this.phaseInternal !== "active" && this.phaseInternal !== "merging") return;
 
     this.merging = true;
     this.setPhase("merging");
     try {
-      const bootstrap = mergeBootstrapIds(
-        this.myEndpointIdInternal,
-        this.discoveryAdapter.bootstrapForMesh(older.meshId),
-        await discoverSiblingEndpoints(this.myEndpointIdInternal),
-      );
-      const nextSession = await this.node.join_mesh(older.meshId, bootstrap);
+      const bootstrap =
+        bootstrapIds ??
+        mergeBootstrapIds(
+          this.myEndpointIdInternal,
+          this.discoveryAdapter.bootstrapForMesh(target.meshId),
+          await discoverSiblingEndpoints(this.myEndpointIdInternal),
+        );
+      const nextSession = await this.node.join_mesh(target.meshId, bootstrap);
       this.eventReader?.cancel().catch(() => {});
       this.session = nextSession;
       this.sender = nextSession.sender;
       this.eventReader = nextSession.receiver.getReader();
       this.mesh = {
-        meshId: older.meshId,
-        meshFormedAt: older.meshFormedAt,
+        meshId: target.meshId,
+        meshFormedAt: target.meshFormedAt,
       };
       this.discoveryAdapter.adoptMesh(this.mesh);
       this.peersInternal.clear();

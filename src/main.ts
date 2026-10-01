@@ -64,6 +64,7 @@ async function main(): Promise<void> {
   presence.onPeersChanged = () => {
     viewport.setPeers(presence.peers);
   };
+  viewport.setLocalIdentity(presence.myColor, presence.myEndpointId);
   viewport.setPeers(presence.peers);
 
   viewport.setOnBoundsChanged((bounds) => {

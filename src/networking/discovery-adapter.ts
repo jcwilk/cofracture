@@ -71,6 +71,10 @@ export class DiscoveryAdapter {
     this.discovery?.onOlderMesh(callback);
   }
 
+  onCapacityLeave(callback: (next: MeshCandidate | null) => void): void {
+    this.discovery?.onCapacityLeave(callback);
+  }
+
   adoptMesh(mesh: MeshState): void {
     this.discovery?.adoptMesh(mesh);
   }

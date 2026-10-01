@@ -15,7 +15,7 @@ export interface PresenceManager {
   myColor: string;
   broadcastBounds: (bounds: Bounds) => Promise<void>;
   onPeersChanged: (() => void) | null;
-  /** Stop the networking session; clears peer highlights. */
+  /** Stop the networking session; drops peer coloring windows. */
   stop: () => Promise<void>;
 }
 

@@ -1,6 +1,65 @@
 import type { Bounds } from "./bounds";
+import {
+  COLORING_SLOTS,
+  HARMONIC_FULL,
+  type PackedWindows,
+} from "./orbit-color";
 
 const MAX_ITER = 128;
+
+const COLORING_UNIFORMS = `
+uniform vec4 u_rect[${COLORING_SLOTS}];
+uniform vec2 u_hs[${COLORING_SLOTS}];
+uniform float u_mask[${COLORING_SLOTS}];
+uniform float u_bail[${COLORING_SLOTS}];
+// 0: only the local window, and it covers the bailout square.
+// 1: only the local window, so one edge test.
+// 2: several windows.
+uniform float u_colorPath;
+`;
+
+function slotAccumGlsl(): string {
+  let body = "";
+  for (let i = 0; i < COLORING_SLOTS; i++) {
+    body += `
+  if (u_mask[${i}] > 0.5) {
+    float hit = 1.0;
+    if (u_bail[${i}] < 0.5) {
+      highp vec4 w = u_rect[${i}];
+      hit = step(w.x, z.x) * step(z.x, w.y) * step(w.z, z.y) * step(z.y, w.w);
+    }
+    float addW = hit / (1.0 + n${i});
+    w${i} += addW;
+    n${i} += hit;
+    total += addW;
+  }`;
+  }
+  return body;
+}
+
+function rankGlsl(): string {
+  let body = "";
+  for (let i = 0; i < COLORING_SLOTS; i++) {
+    body += `
+  if (w${i} > bestW) {
+    secondW = bestW; secondH = bestH; secondS = bestS;
+    bestW = w${i}; bestH = u_hs[${i}].x; bestS = u_hs[${i}].y;
+  } else if (w${i} > secondW) {
+    secondW = w${i}; secondH = u_hs[${i}].x; secondS = u_hs[${i}].y;
+  }`;
+  }
+  return body;
+}
+
+function weightDecls(): string {
+  const w = [];
+  const n = [];
+  for (let i = 0; i < COLORING_SLOTS; i++) {
+    w.push(`w${i}`);
+    n.push(`n${i}`);
+  }
+  return `float ${w.join("=0.0, ")}=0.0;\n  float ${n.join("=0.0, ")}=0.0;`;
+}
 
 const VERTEX_SHADER = `
 attribute vec2 a_pos;
@@ -12,24 +71,68 @@ void main() {
 `;
 
 const MANDELBROT_GLSL = `
-vec3 palette(float t) {
-  return vec3(
-    9.0 * (1.0 - t) * t * t * t,
-    15.0 * (1.0 - t) * (1.0 - t) * t * t,
-    8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t
-  );
+const float H_FULL = ${HARMONIC_FULL.toFixed(8)};
+const float COMPLEMENT_ARC = ${ (150 / 360).toFixed(8) };
+const float SAT_FLOOR = 0.85;
+const float BRIGHT_GAMMA = 0.42;
+
+vec3 hsv2rgb(float h, float s, float v) {
+  vec3 p = abs(fract(vec3(h) + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return v * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), s);
 }
 
 vec4 colorAt(vec2 c) {
-  vec2 z = vec2(0.0);
-  float iter = 0.0;
-  for (int i = 0; i < ${MAX_ITER}; i++) {
-    if (dot(z, z) > 4.0) break;
-    z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
-    iter = float(i + 1);
+  highp vec2 z = vec2(0.0);
+  float total = 0.0;
+  float bestW = 0.0;
+  float secondW = 0.0;
+  float bestH = 0.0;
+  float secondH = 0.0;
+  float bestS = 0.0;
+  float secondS = 0.0;
+  ${weightDecls()}
+  if (u_colorPath < 0.5) {
+    for (int i = 0; i < ${MAX_ITER}; i++) {
+      if (dot(z, z) > 4.0) break;
+      float addW = 1.0 / (1.0 + n0);
+      w0 += addW;
+      n0 += 1.0;
+      total += addW;
+      z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+    }
+  } else if (u_colorPath < 1.5) {
+    for (int i = 0; i < ${MAX_ITER}; i++) {
+      if (dot(z, z) > 4.0) break;
+      highp vec4 w = u_rect[0];
+      float hit = u_mask[0] * step(w.x, z.x) * step(z.x, w.y) * step(w.z, z.y) * step(z.y, w.w);
+      hit = mix(hit, u_mask[0], u_bail[0]);
+      float addW = hit / (1.0 + n0);
+      w0 += addW;
+      n0 += hit;
+      total += addW;
+      z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+    }
+  } else {
+    for (int i = 0; i < ${MAX_ITER}; i++) {
+      if (dot(z, z) > 4.0) break;
+      ${slotAccumGlsl()}
+      z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+    }
   }
-  if (iter >= ${MAX_ITER}.0) return vec4(0.0, 0.0, 0.0, 0.0);
-  return vec4(palette(iter / ${MAX_ITER}.0), 1.0);
+  ${rankGlsl()}
+  if (bestW <= 0.0) return vec4(0.0);
+  float hue = bestH;
+  if (secondW > 0.0) {
+    float dh = secondH - bestH;
+    dh = dh - floor(dh + 0.5);
+    if (abs(dh) < COMPLEMENT_ARC) {
+      hue = bestH + dh * (secondW / (bestW + secondW));
+    }
+  }
+  hue = fract(hue);
+  float sat = max(SAT_FLOOR, max(bestS, secondS));
+  float value = pow(clamp(total / H_FULL, 0.0, 1.0), BRIGHT_GAMMA);
+  return vec4(hsv2rgb(hue, sat, value), 1.0);
 }
 
 // Nested glass faces: 8×8 macro × 8×8 nest = 64 micro-faces across the view (matches zoom partition).
@@ -143,6 +246,7 @@ precision mediump float;
 varying vec2 v_uv;
 uniform vec4 u_bounds;
 uniform vec2 u_resolution;
+${COLORING_UNIFORMS}
 ${MANDELBROT_GLSL}
 
 void main() {
@@ -162,6 +266,7 @@ uniform float u_progress;
 uniform float u_zoomIn;
 // Exact same offsets as idle canvas (JS-packed into a 64×1 RG texture).
 uniform sampler2D u_macroOffTex;
+${COLORING_UNIFORMS}
 ${MANDELBROT_GLSL}
 
 const float TILE_GAP = 3.0;
@@ -336,12 +441,20 @@ interface GlProgram {
   posLoc: number;
 }
 
-interface NormalUniforms {
+interface ColoringUniformLocations {
+  rect: WebGLUniformLocation;
+  hs: WebGLUniformLocation;
+  mask: WebGLUniformLocation;
+  bail: WebGLUniformLocation;
+  path: WebGLUniformLocation;
+}
+
+interface NormalUniforms extends ColoringUniformLocations {
   bounds: WebGLUniformLocation;
   resolution: WebGLUniformLocation;
 }
 
-interface ZoomUniforms {
+interface ZoomUniforms extends ColoringUniformLocations {
   boundsFrom: WebGLUniformLocation;
   boundsTo: WebGLUniformLocation;
   tileRect: WebGLUniformLocation | null; // unused by fly shaders; may be optimized out
@@ -372,6 +485,33 @@ function compileShader(
     throw new Error(`Shader compile failed: ${log}`);
   }
   return shader;
+}
+
+function coloringLocations(
+  gl: WebGLRenderingContext,
+  program: WebGLProgram,
+): ColoringUniformLocations {
+  const rect = gl.getUniformLocation(program, "u_rect[0]");
+  const hs = gl.getUniformLocation(program, "u_hs[0]");
+  const mask = gl.getUniformLocation(program, "u_mask[0]");
+  const bail = gl.getUniformLocation(program, "u_bail[0]");
+  const path = gl.getUniformLocation(program, "u_colorPath");
+  if (rect === null || hs === null || mask === null || bail === null || path === null) {
+    throw new Error("Missing coloring-window uniforms");
+  }
+  return { rect, hs, mask, bail, path };
+}
+
+function uploadColoring(
+  gl: WebGLRenderingContext,
+  locations: ColoringUniformLocations,
+  packed: PackedWindows,
+): void {
+  gl.uniform4fv(locations.rect, packed.rects);
+  gl.uniform2fv(locations.hs, packed.hs);
+  gl.uniform1fv(locations.mask, packed.mask);
+  gl.uniform1fv(locations.bail, packed.bail);
+  gl.uniform1f(locations.path, packed.path);
 }
 
 function linkProgram(
@@ -461,6 +601,7 @@ export class MandelbrotGlRenderer {
     const bounds = webgl.getUniformLocation(normal.program, "u_bounds");
     const normalResolution = webgl.getUniformLocation(normal.program, "u_resolution");
     if (bounds === null || normalResolution === null) throw new Error("Missing normal uniforms");
+    const normalColoring = coloringLocations(webgl, normal.program);
 
     const zoom = linkProgram(webgl, this.vertexShader, FRAGMENT_SHADER_ZOOM);
     const boundsFrom = webgl.getUniformLocation(zoom.program, "u_boundsFrom");
@@ -484,6 +625,7 @@ export class MandelbrotGlRenderer {
     ) {
       throw new Error("Missing zoom uniforms");
     }
+    const zoomColoring = coloringLocations(webgl, zoom.program);
 
     const buffer = webgl.createBuffer();
     if (!buffer) throw new Error("Failed to create buffer");
@@ -516,7 +658,10 @@ export class MandelbrotGlRenderer {
     this.macroOffTexture = macroTex;
 
     this.gl = webgl;
-    this.normal = { ...normal, uniforms: { bounds, resolution: normalResolution } };
+    this.normal = {
+      ...normal,
+      uniforms: { bounds, resolution: normalResolution, ...normalColoring },
+    };
     this.zoom = {
       ...zoom,
       uniforms: {
@@ -529,6 +674,7 @@ export class MandelbrotGlRenderer {
         progress,
         zoomIn,
         macroOffTex,
+        ...zoomColoring,
       },
     };
     this.buffer = buffer;
@@ -592,6 +738,7 @@ export class MandelbrotGlRenderer {
     width: number,
     height: number,
     bounds: Bounds,
+    windows: PackedWindows,
     targetFb: WebGLFramebuffer | null,
   ): void {
     const { program, posLoc, uniforms } = this.normal!;
@@ -608,17 +755,18 @@ export class MandelbrotGlRenderer {
       bounds.imMax,
     );
     gl.uniform2f(uniforms.resolution, width, height);
+    uploadColoring(gl, uniforms, windows);
     this.bindVertexAttrib(gl, posLoc);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   /** Bake the pre-zoom view into a GPU texture (once per zoom). */
-  cacheZoomBackground(width: number, height: number, bounds: Bounds): void {
+  cacheZoomBackground(width: number, height: number, bounds: Bounds, windows: PackedWindows): void {
     const gl = this.ensureGl(width, height);
     this.backgroundReady = false;
     this.ensureBackgroundTarget(gl, width, height);
-    this.drawNormal(gl, width, height, bounds, this.backgroundFb);
+    this.drawNormal(gl, width, height, bounds, windows, this.backgroundFb);
     this.backgroundReady = true;
   }
 
@@ -626,9 +774,9 @@ export class MandelbrotGlRenderer {
     this.backgroundReady = false;
   }
 
-  render(width: number, height: number, bounds: Bounds): HTMLCanvasElement {
+  render(width: number, height: number, bounds: Bounds, windows: PackedWindows): HTMLCanvasElement {
     const gl = this.ensureGl(width, height);
-    this.drawNormal(gl, width, height, bounds, null);
+    this.drawNormal(gl, width, height, bounds, windows, null);
     return this.glCanvas;
   }
 
@@ -642,10 +790,11 @@ export class MandelbrotGlRenderer {
     progress: number,
     zoomIn: boolean,
     macroOffsets: Float32Array,
+    windows: PackedWindows,
   ): HTMLCanvasElement {
     const gl = this.ensureGl(width, height);
     if (zoomIn && !this.backgroundReady) {
-      this.cacheZoomBackground(width, height, boundsFrom);
+      this.cacheZoomBackground(width, height, boundsFrom, windows);
     }
 
     const { program, posLoc, uniforms } = this.zoom!;
@@ -676,6 +825,7 @@ export class MandelbrotGlRenderer {
     gl.uniform2f(uniforms.resolution, width, height);
     gl.uniform1f(uniforms.progress, progress);
     gl.uniform1f(uniforms.zoomIn, zoomIn ? 1 : 0);
+    uploadColoring(gl, uniforms, windows);
     this.uploadMacroOffsets(gl, macroOffsets);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.backgroundTexture);
