@@ -12,14 +12,19 @@
 
 ## 3. Hot path
 
-- [ ] 3.1 Keep the per-step tests inside a fixed slot cap with the local window always reserved, mask empty slots, skip edge tests for a window that covers the bailout region, and avoid texture fetches inside the iteration loop. Verify an idle frame and a zoom transition stay interactive, with no multi-second stall.
+- [ ] 3.1 Keep the per-step tests inside 16 slots, one of them the local window, matching the mesh cap so every member fits. Mask empty slots, skip edge tests for a window that covers the bailout region, and avoid texture fetches inside the iteration loop. Verify an idle frame and a zoom transition stay interactive, with no multi-second stall.
 
 ## 4. Acceptance
 
 - [ ] 4.1 Visually check the canonical solo view, a deep zoom, a zoom transition, an orbit that stays clear, and a strongly colored interior cycle, on a desktop viewport. Verify the coloring rule matches the fractal-viewport scenarios and glass still shows milkiness only on uncolored samples.
 - [ ] 4.2 Visually check the same desktop view with at least two other participant windows of different hues. Verify their hues are distinguishable, no rectangles are drawn, and a failed or stopped session leaves only the local window.
 
+## 5. Mesh capacity
+
+- [ ] 5.1 When choosing a mesh to join or merge into, take the oldest live mesh with fewer than 16 participants, skip full meshes, and form a new mesh when none have room. Verify with mesh-selection tests for an open oldest mesh, a full oldest mesh with a newer open mesh, and every mesh full.
+- [ ] 5.2 Let a listener recognize a full mesh from one member's advertisement without observing every member, and when a mesh is over 16 keep the same 16 participants by a shared rule and send the rest through join-or-form. Verify with tests that a single full advertisement blocks a join and that two members agree who stays when the mesh is over capacity.
+
 ## Explicitly deferred
 
-- Raising the orbit iteration budget, or supporting coloring windows beyond the fixed slot cap as a product guarantee for very large sessions.
-- Changing mesh discovery, the presence payload, tile hit-testing, or glass decoration beyond which samples count as clear versus colored.
+- Raising the orbit iteration budget.
+- Changing the presence bounds-and-hue payload, tile hit-testing, or glass decoration beyond which samples count as clear versus colored.

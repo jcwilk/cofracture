@@ -14,14 +14,14 @@ Each other connected participant's shared tile region SHALL act as a coloring wi
 - **THEN** orbits pick up that participant's hue from the new region
 - **AND** the update does not require a page reload
 
+### Requirement: Explorers in a mesh see each other's hues
+The application SHALL support multiple participants exploring at the same time inside a mesh of at most 16 participants, with presence updates flowing between those participants in near real time.
+
+#### Scenario: Multiple peer hues coexist
+- **WHEN** at least three participants share a mesh and each has a distinct tile focus
+- **THEN** each of them can distinguish every other participant's hue in the fractal coloring on their own screen
+
 ## MODIFIED Requirements
-
-### Requirement: Presence works across simultaneous explorers
-The application SHALL support multiple participants exploring at the same time with presence updates flowing between them in near real time.
-
-#### Scenario: Multiple highlights coexist
-- **WHEN** three or more participants are connected and each has a distinct tile focus
-- **THEN** each participant can distinguish every other participant's hue in the fractal coloring on their own screen
 
 ### Requirement: Solo exploration continues when presence is unavailable
 When peer connectivity cannot be established or is lost, the application SHALL continue local Mandelbrot exploration without blocking navigation.
@@ -60,3 +60,7 @@ Collaborative presence startup, mesh join, merge attempts, and shutdown SHALL go
 ### Requirement: Peer tile highlights are visible
 **Reason:** Peer regions no longer appear as drawn highlights. They color orbits, which is specified by "Peer regions are coloring windows."
 **Migration:** Treat each peer's shared tile region as a coloring window. Do not draw a filled or stroked rectangle for it.
+
+### Requirement: Presence works across simultaneous explorers
+**Reason:** Replaced by "Explorers in a mesh see each other's hues" so the scenario title is not "Multiple highlights coexist," and so a mesh is capped at 16 participants.
+**Migration:** Distinguish co-explorers by hue inside a mesh of at most 16.

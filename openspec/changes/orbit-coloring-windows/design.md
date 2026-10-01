@@ -16,7 +16,7 @@ The iteration loop is the hot path for every pixel, including during zoom transi
 
 **Non-Goals:**
 
-- Changing how many orbit steps are followed, the tile grid, glass decoration, or the presence protocol.
+- Changing how many orbit steps are followed, the tile grid, glass decoration, or the presence bounds-and-hue payload.
 - Coloring from the pixel's own location.
 - A residual escape-time rainbow under the window hues.
 - Drawing even a faint outline of a coloring window.
@@ -35,13 +35,16 @@ The iteration loop is the hot path for every pixel, including during zoom transi
 4. **Windows are the local view plus each peer region, uploaded every frame.** The local window is the visitor's hue and the view bounds, interpolated across a zoom with the same progress as the transition. Peer windows use the regions already interpolated for the old overlay, in each peer's hue. Remove the rectangle stroke and fill. Both zoom-direction shaders that evaluate orbits must use the same coloring.
    - *Alternatives:* Keep the overlay and also color (the user rejected drawn squares). Color only at the end of a zoom (the window would pop).
 
-5. **Keep the per-step test branchless and bounded.** Compile a fixed slot count (16, one of them always the local window). Unused slots are masked off. Containment is four edge tests with no divergent branch. A window that contains the bailout square skips the edge tests and counts every step until escape. A window that misses the disk `|z| ≤ 2` is omitted before upload. No texture fetch inside the iteration loop. Use high precision for the edge test where the fragment shader allows it. If peers exceed the remaining slots, keep the most recently updated ones and always keep the local window.
-   - *Alternatives:* Dependent texture lookup per step (too slow). Unbounded dynamic list (WebGL1 indexing and cost). Testing every window even when it covers the whole disk (wastes the common canonical-view case).
+5. **Keep the per-step test branchless and bounded.** Compile 16 coloring-window slots, one of them always the local window, matching the mesh cap so every member of a mesh fits. Unused slots are masked off. Containment is four edge tests with no divergent branch. A window that contains the bailout square skips the edge tests and counts every step until escape. A window that misses the disk `|z| ≤ 2` is omitted before upload. No texture fetch inside the iteration loop. Use high precision for the edge test where the fragment shader allows it.
+   - *Alternatives:* Dependent texture lookup per step (too slow). Unbounded dynamic list (WebGL1 indexing and cost). Testing every window even when it covers the whole disk (wastes the common canonical-view case). Dropping the stalest peer while still sharing a mesh (would hide someone the group is supposed to include).
+
+6. **Cap each mesh at 16 participants, including yourself, at join time.** Discovery already groups people into meshes and prefers the oldest formation. Keep that preference, but only among meshes with fewer than 16 live members. A full mesh is not joined and is not a merge target. If every live mesh is full, form a new mesh. Each advertisement carries the sender's current live member count, including themselves, so a listener can treat a mesh as full after hearing from one member rather than waiting to see all 16. Also treat a mesh as full when 16 distinct live advertisers have been observed. If a race pushes a mesh over 16, every member sorts endpoint ids and the lowest 16 stay; the others leave and run the same join-or-form rule. The coloring slots use that same set, so a brief overshoot does not paint a 17th window.
+   - *Alternatives:* Keep one global mesh and drop peers only in the shader (the 17th person is in the group but invisible). Refuse to form a second mesh (the 17th visitor is stuck solo while a full mesh exists). A central assigner (this deployment has no coordination server).
 
 ## Risks / Trade-offs
 
 - **[Risk] Deep zooms look sparse because `z` starts at 0, usually outside the small local window** → This is the same rule as the wide view, not a second mode. Accept echoes and clear orbits. Do not fall back to the rainbow when a frame looks dark.
-- **[Risk] Sixteen slots drop a peer in a very large session** → Local window is reserved. Overflow keeps the freshest peers. The usual session is a handful of people; call out anything larger during visual checks.
+- **[Risk] Two newcomers both see 15 members and both join** → The mesh briefly exceeds 16, then the deterministic endpoint-id rule returns it to the same 16 and the extras seek another mesh. Coloring uses that same set.
 - **[Risk] Hue-space mix still surprises when two strong complementary windows tie** → Leader wins and saturation stays high, so the pixel stays vivid instead of turning gray. A third hue will not appear as its own tint once two stronger windows exist; it still brightens the pixel.
 - **[Risk] Per-step rectangle tests stall zoom frames** → Slot cap, bailout fast path, and no in-loop texture fetch. If a zoom hitch shows up in acceptance, tighten the fast path before raising the iteration count or the slot cap.
 - **[Risk] Very deep window edges flicker in medium precision** → Prefer high precision for the containment test.
@@ -49,7 +52,7 @@ The iteration loop is the hot path for every pixel, including during zoom transi
 ## Migration Plan
 
 - Ship the coloring and the overlay removal together so peers are not invisible for a frame and not double-drawn.
-- No protocol or stored-data migration. Rollback is restoring escape-time coloring and the rectangle overlay.
+- Discovery advertisements gain a membership count. Older clients that ignore an unknown field still parse the rest of an advertisement; new clients treat a missing count as "unknown" and fall back to the number of distinct live advertisers they have actually seen. Rollback is restoring escape-time coloring, the rectangle overlay, and uncapped oldest-mesh join.
 - Archive through the normal finish path after visual acceptance.
 
 ## Open Questions

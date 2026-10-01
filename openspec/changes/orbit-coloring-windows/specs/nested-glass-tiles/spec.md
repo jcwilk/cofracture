@@ -1,3 +1,20 @@
+## ADDED Requirements
+
+### Requirement: Uncolored fractal samples keep a minimum glass substrate
+Where a fractal sample is uncolored because its orbit entered no coloring window, the nested face SHALL still show a minimum glass-substrate milkiness so nested boundaries remain readable, while colored fractal samples SHALL NOT receive additional milkiness. Substrate milkiness SHALL thin toward the face edge to imply a slight natural bevel. The starfield SHALL remain visible through uncolored regions and soft seams.
+
+#### Scenario: Uncolored samples show faint glass without hiding stars
+- **GIVEN** a nested face covers an uncolored fractal sample
+- **WHEN** a visitor views that region
+- **THEN** a faint glass substrate is visible enough to suggest the nested face
+- **AND** the starfield behind the fractal view remains visible through that region
+
+#### Scenario: Colored samples are not milky-washed
+- **GIVEN** a nested face covers a fractal sample colored by one or more coloring windows
+- **WHEN** a visitor views that region
+- **THEN** those hues are not covered by an added milky plate
+- **AND** glass cues appear primarily as edge bevel and specular highlights
+
 ## MODIFIED Requirements
 
 ### Requirement: Nested faces read as flat-ish glass or mahjong tiles
@@ -23,18 +40,8 @@ Nested faces SHALL appear as rounded-square glass / mahjong-like pieces with sof
 - **WHEN** a visitor looks at the bottom-left area of that face
 - **THEN** a softer secondary catch light is perceptible at the bottom-left, providing shape contrast on the otherwise dark face
 
+## REMOVED Requirements
+
 ### Requirement: Transparent fractal regions keep a minimum glass substrate
-Where a fractal sample is uncolored because its orbit entered no coloring window, the nested face SHALL still show a minimum glass-substrate milkiness so nested boundaries remain readable, while colored fractal samples SHALL NOT receive additional milkiness. Substrate milkiness SHALL thin toward the face edge to imply a slight natural bevel. The starfield SHALL remain visible through uncolored regions and soft seams.
-(Previously: set interior counted as clear; escaped samples counted as opaque.)
-
-#### Scenario: Set interior shows faint glass without hiding stars
-- **GIVEN** a nested face covers an uncolored fractal sample, including set interior whose orbit entered no coloring window
-- **WHEN** a visitor views that region
-- **THEN** a faint glass substrate is visible enough to suggest the nested face
-- **AND** the starfield behind the fractal view remains visible through that region
-
-#### Scenario: Opaque fractal is not milky-washed
-- **GIVEN** a nested face covers a fractal sample colored by one or more coloring windows
-- **WHEN** a visitor views that region
-- **THEN** those hues are not covered by an added milky plate
-- **AND** glass cues appear primarily as edge bevel and specular highlights
+**Reason:** Replaced by "Uncolored fractal samples keep a minimum glass substrate." The old scenario titles named set interior and escaped samples.
+**Migration:** Treat clear glass as samples whose orbits entered no coloring window, and skip the milky plate on samples that received coloring-window color.
