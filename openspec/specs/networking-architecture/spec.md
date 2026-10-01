@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change resilient-networking-foundation. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Networking is separated into policy, transport, and session layers
 Collaborative networking SHALL be organized so that mesh/presence policy decisions are independent of concrete transport mechanisms, and so that a session layer owns lifecycle and exposes a stable façade to the application UI. The fractal viewport SHALL NOT be required for discovery or presence logic to run.
 
@@ -36,11 +38,11 @@ A networking session SHALL progress through well-defined phases including discov
 - **THEN** they pass against the delivered build
 
 ### Requirement: Connectivity loss degrades to solo without blocking exploration
-When discovery, join, or an active mesh fails or becomes unavailable, the application SHALL continue local exploration and SHALL omit peer highlights until connectivity succeeds again.
+When discovery, join, or an active mesh fails or becomes unavailable, the application SHALL continue local exploration and SHALL omit other participants' coloring windows until connectivity succeeds again. The local view's coloring window SHALL remain active.
 
 #### Scenario: Failed join leaves solo mode
 - **GIVEN** a visitor cannot complete discovery or mesh join
 - **WHEN** networking reports failure or gives up the attempt
 - **THEN** the visitor can still navigate the fractal
-- **AND** peer highlights are not shown
-
+- **AND** other participants' coloring windows are not shown
+- **AND** the local view still colors the fractal

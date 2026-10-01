@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change nested-glass-tiles. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Macro tiles show nested glass faces aligned with the next zoom grid
 Each of the 64 macro tiles in the visible square SHALL present a nested 8×8 arrangement of smaller glass-like faces whose partition matches the same 8×8 subdivision used when that macro tile becomes the next full view, so the nested faces foreshadow the tiles revealed after zooming in.
 
@@ -31,24 +33,9 @@ Nested faces SHALL appear as rounded-square glass / mahjong-like pieces with sof
 - **AND** the highlight does not read as a diffuse wash across the full face
 
 #### Scenario: Soft complementary catch at bottom-left for transparent faces
-- **GIVEN** a nested glass face covers a transparent fractal region (Mandelbrot set interior)
+- **GIVEN** a nested glass face covers an uncolored fractal sample whose orbit entered no coloring window
 - **WHEN** a visitor looks at the bottom-left area of that face
 - **THEN** a softer secondary catch light is perceptible at the bottom-left, providing shape contrast on the otherwise dark face
-
-### Requirement: Transparent fractal regions keep a minimum glass substrate
-Where the Mandelbrot set interior would otherwise be fully transparent, the nested face SHALL still show a minimum glass-substrate milkiness so nested boundaries remain readable, while opaque fractal color SHALL NOT receive additional milkiness. Substrate milkiness SHALL thin toward the face edge to imply a slight natural bevel. The starfield behind the view SHALL remain visible through transparent regions and soft seams.
-
-#### Scenario: Set interior shows faint glass without hiding stars
-- **GIVEN** a nested face covers a region of Mandelbrot set interior (transparent fractal samples)
-- **WHEN** a visitor views that region
-- **THEN** a faint glass substrate is visible enough to suggest the nested face
-- **AND** the starfield behind the fractal view remains visible through that region
-
-#### Scenario: Opaque fractal is not milky-washed
-- **GIVEN** a nested face covers brightly colored escaped Mandelbrot samples
-- **WHEN** a visitor views that region
-- **THEN** the fractal colors are not covered by an added milky plate
-- **AND** glass cues appear primarily as edge bevel and specular highlights
 
 ### Requirement: Macro tiles wander subtly without changing selection targets
 While the idle grid is shown, macro tiles SHALL exhibit a subtle loose arrangement (small positional wander) so they feel like arranged pieces rather than a rigidly locked mesh. During zoom-in and zoom-out transitions, unselected macro tiles SHALL continue that same wander without a discontinuous jump in position or phase at transition start or end. Tile selection hit-testing SHALL continue to use the logical 8×8 partition of the visible square, not the momentary visual offset of a wandering tile.
@@ -107,3 +94,17 @@ During a zoom-out fly-together animation, each animating face SHALL present the 
 - **WHEN** the composited result is observed
 - **THEN** glass-substrate milkiness and specular highlights are not visually reduced or washed out compared to the idle glass appearance
 
+### Requirement: Uncolored fractal samples keep a minimum glass substrate
+Where a fractal sample is uncolored because its orbit entered no coloring window, the nested face SHALL still show a minimum glass-substrate milkiness so nested boundaries remain readable, while colored fractal samples SHALL NOT receive additional milkiness. Substrate milkiness SHALL thin toward the face edge to imply a slight natural bevel. The starfield SHALL remain visible through uncolored regions and soft seams.
+
+#### Scenario: Uncolored samples show faint glass without hiding stars
+- **GIVEN** a nested face covers an uncolored fractal sample
+- **WHEN** a visitor views that region
+- **THEN** a faint glass substrate is visible enough to suggest the nested face
+- **AND** the starfield behind the fractal view remains visible through that region
+
+#### Scenario: Colored samples are not milky-washed
+- **GIVEN** a nested face covers a fractal sample colored by one or more coloring windows
+- **WHEN** a visitor views that region
+- **THEN** those hues are not covered by an added milky plate
+- **AND** glass cues appear primarily as edge bevel and specular highlights
