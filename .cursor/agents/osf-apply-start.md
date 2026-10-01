@@ -73,11 +73,20 @@ For each pending task:
 
 Validate per **`tasks.md`** when directed (e.g. `npx @fission-ai/openspec@latest validate <name> --type change`).
 
+## Worktree hygiene (prevention and cleanup)
+
+Apply-complete includes leaving the worktree no dirtier from **this** apply unit. Practice this while implementing—not only at handoff.
+
+- **Scratch placement:** Prefer project-documented intermediate/build directories. If none exist, use the OS temporary area. **Do not** invent ad-hoc in-repo cache homes or throwaway top-level dirs for package-manager registries or tool caches.
+- **Disposable helpers:** Prefer reusable harnesses when investment pays off; ephemeral one-off drivers are allowed when proportionate. Place them outside lasting source layout and **discard** them before finish unless the approved change intentionally delivers them as lasting assets.
+- **Commit or discard before finish:** Resolve uncommitted/untracked changes **attributable to this apply unit** by incorporating them into the delivered change (commit) or discarding them. **Do not** abort solely because leftovers exist when incorporate-or-discard remains available.
+- **Exclude concurrent dirt:** If your best understanding is that a path change came from unrelated concurrent work (another agent/user/process), leave it untouched—do not commit, discard, or “fix” it. When uncertain, bias toward exclusion. Record exclusions (and uncertainty) in finish **verification notes**.
+
 ## Step 4 — Finish (normal completion)
 
-When all tasks are `- [x]` and task-required validation passes:
+When all tasks are `- [x]`, task-required validation passes, and apply-attributable worktree leftovers are resolved (or explicitly excluded as concurrent dirt):
 
-Spawn a Task with **`subagent_type: osf-apply-finish`** and a **self-contained** prompt: change name, working branch, repository root, **verification notes** (per-class evidence for every ops task plus tooling-only validations), and merge/push instruction (default: merge into `main` and push).
+Spawn a Task with **`subagent_type: osf-apply-finish`** and a **self-contained** prompt: change name, working branch, repository root, **verification notes** (per-class evidence for every ops task plus tooling-only validations, plus hygiene resolution or explicit exclusion paths), and push instruction (default: push working branch only; include `merge-to-default-branch: yes` only when the human explicitly authorized default-branch integration in the **same** directive).
 
 Return the finish subagent's debrief verbatim to the parent.
 
@@ -89,11 +98,13 @@ Spawn a Task with **`subagent_type: osf-apply-abort`**: change name, working bra
 
 Return the abort debrief verbatim to the parent.
 
+**Abort is not for leftover cleanup.** Unresolved apply-attributable scratch is a commit-or-discard duty before finish—not a reason to abort when cleanup remains available.
+
 ## Output formats
 
 While working: `## Implementing: <change-name>` with per-task progress.
 
-On completion (after finish): `## Apply Complete: <change-name>` with finish debrief (archive, merge SHA, push, warnings).
+On completion (after finish): `## Apply Complete: <change-name>` with finish debrief (archive, working-branch SHA, push, warnings).
 
 On abort: `## Apply Aborted: <change-name>` with blocker, git state, next step (`/osf-propose`).
 

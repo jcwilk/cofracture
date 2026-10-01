@@ -16,7 +16,7 @@ Commit and push the changes in the repo that are **relevant to the current conte
 
 3. **Stage and commit**: Stage only the relevant files. Write a clear, descriptive commit message (see **Commit messages** below). Commit.
 
-4. **Push**: Push to the remote branch.
+4. **Push**: Push to the remote tracking branch for the **current branch** only (`origin/<current-branch>`). Persist is **not** OSF finish and does **not** merge into the default branch or reconcile living specs.
 
 5. **Post-commit check**: After pushing, run `git status` again. If there are **any uncommitted changes** (modified, untracked, or staged-but-not-committed):
    - **Warn clearly**: List the unchecked files and state that they were not committed.
@@ -33,7 +33,7 @@ Be **explicit and verbose**. Optimize for both GitHub and agentic usage.
 
 ## Rules
 
-- **Current branch only:** Push updates **`origin/<current-branch>`**. **Do not** merge into **`main`** or fast-forward **`main`** unless the user explicitly asked (**AGENTS.md** — **Git branches and `main` (default)**).
+- **Current branch only:** Push updates **`origin/<current-branch>`**. **Do not** merge into the default branch, fast-forward the default branch, or imply OSF finish/archive behavior. Default-branch integration happens only in **`osf-apply-finish`** when the human explicitly authorizes `merge-to-default-branch: yes` in the same finish directive (**AGENTS.md** — **Git branches and default branch**).
 - **No force push** unless the user explicitly requests it.
 - **No committing secrets** — if any staged file might contain secrets, stop and ask.
 - **Scoped commits**: Prefer one logical commit per context. If the conversation covered multiple distinct changes, you may split into multiple commits with clear messages, or ask the user.

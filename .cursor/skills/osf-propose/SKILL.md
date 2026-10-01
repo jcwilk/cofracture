@@ -221,13 +221,13 @@ After OpenSpec artifacts for this request are complete and validated:
    - **Isolate and restore.** Before or after the persist commit (whichever preserves git state correctly), put the repo back so out-of-scope paths match their exact prior state — same working-tree contents, same staged-vs-unstaged split. Use safe mechanics (`git stash` with path scope, selective restore/checkout). **Never** drop the user's unrelated work.
    - If you cannot restore cleanly without ambiguity, **stop and ask**. Do not commit a mix of unrelated files "to be helpful."
 
-4. **Order.** Complete the OpenSpec-only commit (and push, per persist) for the intended change(s); **then** ensure unrelated paths match prior state.
+4. **Order.** Complete the OpenSpec-only commit (and push the current branch, per persist) for the intended change(s); **then** ensure unrelated paths match prior state. Propose-time push does **not** imply that **`/osf-apply-finish`** will merge into the default branch—finish archives on the working branch and pushes that branch by default.
 
 ## Debrief — hand off to `/osf-explain`
 
 After artifacts are validated and persisted, render the human-facing closing summary by reading and following **`.cursor/skills/osf-explain/SKILL.md`** with the just-created or refined change as the scope (use the **change-scope template**, not a single-artifact template). **Do not freelance a debrief** — every `/osf-propose` close-out goes through `/osf-explain` so the reviewer sees the same shape every time.
 
-The explain footer (**Ambiguities**, **Apply scope at shipping**, **Quick read**) carries skim and approval context—**do not** instruct agents to echo that footer in **What the human needs to decide**; Decide is action lines only.
+The short explain template is: change metadata → **Spec delta shape** → **Ambiguities** → **Apply scope at shipping** → **Quick read** → **What the human needs to decide**. Do **not** dump removed drill-down sections (Intent, Changelog, Capability impact, Delta details, Spec-quality flags, Design highlights, Tasks, Living-spec impact). **Decide** is action lines only—do not echo Ambiguities, Apply scope, or Quick read there.
 
 If the user explicitly opted out of persist, still run `/osf-explain` against the in-place change folder before ending the turn.
 

@@ -1,5 +1,5 @@
 ---
-OPENSPEC_FLOW_VERSION: "1.3.0"
+OPENSPEC_FLOW_VERSION: "1.7.0"
 OPENSPEC_CLI_PACKAGE: "@fission-ai/openspec"
 description: |
   Human-facing overview plus machine-readable bundle version for the OpenSpec Flow
@@ -78,7 +78,7 @@ In a change folder, `specs/<domain>/spec.md` is a **delta**:
 - **`## MODIFIED Requirements`** — replace the named requirement on archive.
 - **`## REMOVED Requirements`** — delete on archive.
 
-Each requirement uses `### Requirement: <Name>` and at least one `#### Scenario:` with `GIVEN` / `WHEN` / `THEN`. **`/osf-apply-finish`** runs archive on the working branch so merges into living specs stay atomic with delivery.
+Each requirement uses `### Requirement: <Name>` and at least one `#### Scenario:` with `GIVEN` / `WHEN` / `THEN`. **`/osf-apply-finish`** runs archive on the working branch so living specs reconcile on the branch where implementation landed.
 
 ## Cursor capabilities in this bundle
 
@@ -86,10 +86,10 @@ Each requirement uses `### Requirement: <Name>` and at least one `#### Scenario:
 |---------------|------|------|
 | **`/osf-explore`** | Skill | Read-only thinking partner; no implementation. |
 | **`/osf-propose`** | Skill | Create or refine a change under `openspec/changes/<name>/`, validate, persist. |
-| **`/osf-explain`** | Skill | Structured human review summary of a change; end-of-debrief skim: **Ambiguities** → **Apply scope at shipping** → **Quick read**. |
+| **`/osf-explain`** | Skill | Short fixed debrief: metadata → **Spec delta shape** → **Ambiguities** → **Apply scope at shipping** → **Quick read** → **Decide**. |
 | **`/osf-apply-changes`** | Skill | Spawns **`osf-apply-start`** (Task-only) workers. |
 | **`/osf-apply-start`** | Subagent | Implements one approved change on the **current branch** (working branch). |
-| **`/osf-apply-finish`** | Subagent | Verify, archive, merge default branch, push. |
+| **`/osf-apply-finish`** | Subagent | Verify, archive on working branch, commit, push working branch (default-branch merge explicit opt-in only). |
 | **`/osf-apply-abort`** | Subagent | Stop safely; preserve investigation; debrief human. |
 
 **`osf-apply-*`** MUST run via the Task tool; do not replay **`.cursor/agents/osf-apply-*.md`** in the parent thread (see **`osf-apply-changes`** and **`AGENTS.md`**).
@@ -99,9 +99,9 @@ Each requirement uses `### Requirement: <Name>` and at least one `#### Scenario:
 1. **Explore (optional):** **`/osf-explore`** to clarify intent without coding.
 2. **Shape:** **`/osf-propose`** captures `proposal.md`, `design.md`, deltas, `tasks.md`.
 3. **Apply:** **`/osf-apply-changes`** → **`osf-apply-start`** on the **current branch** (branch/worktree already chosen by the human).
-4. **Finish:** **`osf-apply-finish`** archives, reconciles **`openspec/specs/`**, merges, pushes — or **`osf-apply-abort`** when intent must be revised.
+4. **Finish:** **`osf-apply-finish`** archives on the working branch, reconciles **`openspec/specs/`** there, commits, and pushes the working branch — or **`osf-apply-abort`** when intent must be revised. Default-branch integration is explicit opt-in only.
 
-**Success criterion:** a change is **apply-complete** only when every non-deferred **`tasks.md`** row has class-appropriate evidence (or an authorized override) and finish verification passes—not merely when the default branch has merged.
+**Success criterion:** a change is **apply-complete** only when every non-deferred **`tasks.md`** row has class-appropriate evidence (or an authorized override), apply-attributable worktree leftovers are resolved (incorporated or discarded), and finish verification passes—not merely when archive succeeded on the working branch.
 
 ## Forbidden lane transitions
 
@@ -113,14 +113,14 @@ Slash commands are **lanes** with distinct writable scope. Crossing lanes withou
 | **`/osf-propose`** → artifacts under `openspec/changes/<name>/` only | ✅ |
 | Bundle/integration paths → edit after human approval via **`tasks.md`** in **`/osf-apply-changes`** | ✅ |
 
-## Apply-complete vs merge-complete
+## Apply-complete vs archive-complete
 
 | Term | Meaning |
 |------|---------|
-| **Merge-complete** | Archive ran, living specs reconciled, working branch merged into the default branch (and pushed when agreed). |
-| **Apply-complete** | Merge-complete **and** every non-deferred task—including **build/release artifact** and **environment acceptance** work—has evidence in the apply/finish handoff or an explicit same-message human override; otherwise the apply unit should have **aborted** instead of finishing. |
+| **Archive-complete** | Archive ran on the working branch, living specs reconciled there, and the archival result committed (and pushed when agreed). Does not require integration into the repository default branch. |
+| **Apply-complete** | Archive-complete **and** every non-deferred task—including **build/release artifact** and **environment acceptance** work—has evidence in the apply/finish handoff or an explicit same-message human override, **and** apply-attributable worktree leftovers have been incorporated into the delivered change or discarded. Unrelated concurrent dirt (other agents/users/processes) is excluded from that hygiene obligation and noted in the debrief—it does not by itself deny apply-complete. Missing ops evidence still means the apply unit should have **aborted** instead of finishing; leftover agent scratch is commit-or-discard cleanup, not an abort default. |
 
-Repository hygiene (checked boxes, validate, merge) can succeed while operational delivery is still missing. OSF treats that gap as a failure mode: orchestrators must not soften Task prompts, workers must not substitute weaker checks, and finish must not trust checkboxes alone for ops task classes.
+Checked boxes, validate, and archive can succeed while operational delivery is still missing or while agent-created scratch remains. OSF treats both gaps as failure modes for **apply-complete** labeling: orchestrators must not soften Task prompts, workers must not substitute weaker checks, finish must not trust checkboxes alone for ops task classes, and finish must refuse apply-complete while apply-attributable leftovers remain unresolved.
 
 ## Blocked flow
 

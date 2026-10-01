@@ -537,7 +537,7 @@ openspec/
                 └── spec.md ─────────┘
 
 
-After archive (still on the execution branch, before merge into main):
+After archive (on the execution branch — archive-complete):
 
 openspec/
 ├── specs/
@@ -556,14 +556,14 @@ openspec/
 
 ### The Archive Process (in this repo)
 
-In this repo, archive is a *step inside* **`/osf-apply-finish`**, not a standalone command. The full atomic finish is:
+In this repo, archive is a *step inside* **`/osf-apply-finish`**, not a standalone command. The default finish sequence is:
 
 1. **Verify.** Tasks are checked off and `npx @fission-ai/openspec@latest validate <name> --type change` passes.
 2. **Archive on the execution branch.** Each delta section (ADDED / MODIFIED / REMOVED) is applied to the corresponding main spec under `openspec/specs/`. The change folder moves to `openspec/changes/archive/` with a date prefix for chronological ordering. All artifacts remain intact in the archive.
-3. **Merge the execution branch into `main`.**
-4. **Push** to the remote.
+3. **Commit** the archival result on the execution branch.
+4. **Push** the execution branch to its remote tracking branch.
 
-This means there is **never a window** where behavior lands on `main` while living specs lag — `openspec/specs/` and `main` advance together. If a worker discovers the approved change should not continue, it spawns **`/osf-apply-abort`** instead, which rolls back unapproved work, returns a debrief, and never archives.
+Default finish **does not** merge the execution branch into `main`. Optional default-branch integration runs only when the human explicitly authorizes `merge-to-default-branch: yes` in the same finish directive. If a worker discovers the approved change should not continue, it spawns **`/osf-apply-abort`** instead, which rolls back unapproved work, returns a debrief, and never archives.
 
 ### Why Archive Matters
 
@@ -571,7 +571,7 @@ This means there is **never a window** where behavior lands on `main` while livi
 
 **Audit trail.** The archive preserves the full context of every change — not just what changed, but the proposal explaining why, the design explaining how, and the tasks showing the work done.
 
-**Spec evolution.** Specs grow organically as changes are archived. Each archive merges its deltas, building up a comprehensive specification over time. Because the merge into `main` is atomic with the archive, a reader of `main` at any commit sees living specs that match the implementation at that commit.
+**Spec evolution.** Specs grow organically as changes are archived. Each archive merges its deltas into living specs on the execution branch, building up a comprehensive specification over time. On the working branch, reconciled **`openspec/specs/`** match the implementation at that commit. Optional default-branch integration (explicit human opt-in) is separate from archive-complete.
 
 ## How It All Fits Together (in this repo)
 
@@ -617,20 +617,21 @@ This diagram replaces the upstream `/opsx:*` flow with the `/osf-*` flow used he
    │     branch (deltas      │  │    execution branch    │
    │     merge into          │  │  - park investigation  │
    │     openspec/specs/)    │  │    on a clearly named  │
-   │  3. merge execution     │  │    exploratory branch  │
-   │     branch into main    │  │    if useful           │
-   │  4. push                │  │  - return debrief to   │
+   │  3. commit archive      │  │    exploratory branch  │
+   │  4. push execution      │  │    if useful           │
+   │     branch              │  │  - return debrief to   │
    │                         │  │    the human; never    │
-   │  (atomic; no window     │  │    edits the change    │
-   │   where main and        │  │    folder              │
-   │   openspec/specs/       │  │  - check out main      │
-   │   disagree)             │  │                        │
+   │  (optional: merge to    │  │    edits the change    │
+   │   default branch only   │  │    folder              │
+   │   when human explicitly │  │  - check out default   │
+   │   authorizes)           │  │    branch (cleanup)    │
    └────────────┬────────────┘  └───────────┬────────────┘
                 │                           │
                 ▼                           ▼
-       main + openspec/specs/      human revises intent via
-       advance together; the       /osf-propose, then re-runs
-       cycle restarts on the       /osf-apply-changes
+       working branch +        human revises intent via
+       openspec/specs/        /osf-propose, then re-runs
+       reconciled on branch;   /osf-apply-changes
+       cycle restarts on the
        next change
 ```
 
@@ -639,7 +640,7 @@ This diagram replaces the upstream `/opsx:*` flow with the `/osf-*` flow used he
 1. Living specs under `openspec/specs/` describe current behavior.
 2. **`/osf-propose`** (optionally fed by **`/osf-explore`**) proposes modifications as deltas under `openspec/changes/<name>/`.
 3. **`/osf-apply-changes`** spawns **`/osf-apply-start`** workers that make the changes real on isolated branches.
-4. **`/osf-apply-finish`** archives (deltas merge into `openspec/specs/`) and merges into `main` atomically — `main` and living specs always agree.
+4. **`/osf-apply-finish`** archives on the execution branch (deltas merge into `openspec/specs/` there), commits, and pushes the working branch — default-branch merge is explicit opt-in only.
 5. Living specs now describe the new behavior.
 6. The next change builds on updated specs.
 

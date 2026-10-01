@@ -33,9 +33,9 @@ Before touching git, capture the current working-branch state (commit list since
 
 Bias toward preservation on a **clearly-named exploratory branch** when work might inform a revised proposal.
 
-## Step 2 — Land on the default branch
+## Step 2 — Land on the default branch (cleanup only)
 
-After cleanup on the working branch:
+After cleanup on the working branch, check out the default branch for a **clean workspace**. This is **not** finish and **not** default-branch integration—abort never merges the working branch into default.
 
 1. **Resolve default branch** the same way as **`osf-apply-finish`** (`main` first, else `git symbolic-ref refs/remotes/origin/HEAD`).
 2. From **repository root**, `git checkout <default-branch>`—**without** merging the rolled-back working branch.
