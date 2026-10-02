@@ -38,11 +38,6 @@ describe("one identity per run", () => {
       },
     });
 
-    const wasm = await import("presence-wasm");
-    const fromSecret = await wasm.PresenceNode.spawn_with_secret(secret);
-    const secretId = fromSecret.endpoint_id();
-    await fromSecret.shutdown();
-
     const scope = `identity-${crypto.randomUUID()}`;
     const lines: string[] = [];
     const info = vi.spyOn(console, "info").mockImplementation((line?: unknown) => {
@@ -54,7 +49,7 @@ describe("one identity per run", () => {
       const second = await startNetworkingSession({ scope: `other-${scope}` });
       expect(second).toBe(first);
       expect(second.myEndpointId).toBe(first.myEndpointId);
-      expect(second.myEndpointId).not.toBe(secretId);
+      expect(second.myEndpointId).not.toBe(secret);
       expect(store.has(STORED_ENDPOINT_SECRET_KEY)).toBe(false);
       const selfLines = lines.filter((line) => line.startsWith("presence self "));
       expect(selfLines).toHaveLength(1);
@@ -66,7 +61,7 @@ describe("one identity per run", () => {
         listenWindowMs: 200,
       });
       expect(fresh.myEndpointId).not.toBe(first.myEndpointId);
-      expect(fresh.myEndpointId).not.toBe(secretId);
+      expect(fresh.myEndpointId).not.toBe(secret);
       expect(store.has(STORED_ENDPOINT_SECRET_KEY)).toBe(false);
       await stopNetworkingSession();
     } finally {
