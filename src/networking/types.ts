@@ -1,4 +1,5 @@
 import type { Bounds } from "../bounds";
+import type { ActivityRecord } from "./activity";
 import type { PeerPresence } from "./peers";
 
 /** Observable networking session phases. */
@@ -21,7 +22,11 @@ export interface NetworkingSessionApi {
   readonly peers: Map<string, PeerPresence>;
   readonly myEndpointId: string;
   readonly myColor: string;
+  readonly localRegion: Bounds;
+  readonly scope: string;
   onPeersChanged: (() => void) | null;
+  subscribe: (listener: (record: ActivityRecord) => void) => () => void;
+  setLocalRegion: (bounds: Bounds) => Promise<void>;
   broadcastBounds: (bounds: Bounds) => Promise<void>;
   /** Stop discovery + presence; clears peers; leaves local exploration intact. */
   stop: () => Promise<void>;

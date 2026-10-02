@@ -15,6 +15,7 @@ import {
   type FractalRender,
 } from "./mandelbrot";
 import type { PeerPresence } from "./presence";
+import { colorForEndpoint, endpointKey } from "./networking/peers";
 import { packMacroOffsets, tileMacroOffset } from "./tile-style";
 import {
   COLORING_SLOTS,
@@ -123,8 +124,10 @@ export class Viewport {
   }
 
   setLocalIdentity(color: string, endpointId: string): void {
-    this.localColor = color;
-    this.localEndpointId = endpointId;
+    this.localEndpointId = endpointKey(endpointId) ?? endpointId;
+    this.localColor = this.localEndpointId
+      ? colorForEndpoint(this.localEndpointId)
+      : color;
     this.invalidateFractalCache();
   }
 
@@ -293,7 +296,9 @@ export class Viewport {
   }
 
   private packedWindows(localBounds: Bounds, now: number): PackedWindows {
-    const localHs = this.windowHue(this.localColor);
+    const localHs = this.windowHue(
+      this.localEndpointId ? colorForEndpoint(this.localEndpointId) : this.localColor,
+    );
     const windows: ColoringWindow[] = [
       { bounds: localBounds, hue: localHs.hue, saturation: localHs.saturation },
     ];
@@ -311,7 +316,7 @@ export class Viewport {
       const bounds = this.peerAnimStart.has(id)
         ? this.interpolatePeerBounds(id, now)
         : (this.peerDisplayed.get(id) ?? peer.bounds);
-      const hs = this.windowHue(peer.color);
+      const hs = this.windowHue(colorForEndpoint(peer.endpointId));
       windows.push({ bounds, hue: hs.hue, saturation: hs.saturation });
     }
     return packColoringWindows(windows);
